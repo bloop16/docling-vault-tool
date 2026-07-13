@@ -1,0 +1,4 @@
+# Kernabhaengigkeiten fuer das Docling Vault Tool.
+# Docling entwickelt sich schnell; bei API-Aenderungen ggf. Version pinnen.
+docling>=2.0
+streamlit>=1.30
