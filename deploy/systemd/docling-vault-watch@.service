@@ -1,0 +1,32 @@
+# systemd-Template fuer die dauerhafte Ordnerueberwachung eines Jobs.
+#
+# Installation (als root):
+#   1. Pfade unten anpassen (ExecStart, User, ggf. Environment).
+#   2. Datei nach /etc/systemd/system/docling-vault-watch@.service kopieren.
+#   3. systemctl daemon-reload
+#   4. systemctl enable --now docling-vault-watch@<job-id>
+#      (Job-ID aus `docling-vault-jobs list`, z. B. berichte-2024)
+#
+# Der Dienst laeuft unter dem angegebenen Nutzer; Jobs/Manifeste liegen in
+# dessen Konfigverzeichnis (~/.config/docling-vault-tool bzw.
+# DOCLING_VAULT_HOME).
+
+[Unit]
+Description=Docling Vault Ordnerueberwachung (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Anpassen: Pfad zur Installation (venv-Beispiel).
+ExecStart=/opt/docling-vault-tool/.venv/bin/docling-vault-jobs watch %i
+# Anpassen: Nutzer, dem der Job gehoert.
+User=docling
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+# Optional: abweichendes Konfigverzeichnis.
+# Environment=DOCLING_VAULT_HOME=/srv/docling-vault
+
+[Install]
+WantedBy=multi-user.target

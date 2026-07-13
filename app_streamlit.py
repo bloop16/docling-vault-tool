@@ -283,6 +283,33 @@ with st.sidebar:
         value=max(1, cpu_count - 1),
         help="Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren.",
     )
+
+    st.markdown(
+        '<div class="side-label">Docling-Funktionen</div>', unsafe_allow_html=True
+    )
+    extract_images = st.toggle(
+        "Bilder extrahieren",
+        value=True,
+        help="Eingebettete Grafiken als eigene Dateien ablegen und in den "
+        "Notizen verlinken. Deaktiviert: reine Textkonvertierung.",
+    )
+    images_scale = 2.0
+    if extract_images:
+        images_scale = st.slider(
+            "Bildauflösung (Skalierung)",
+            min_value=1.0,
+            max_value=4.0,
+            value=2.0,
+            step=0.5,
+            help="Höhere Werte liefern schärfere Bilder, brauchen aber mehr "
+            "Zeit und Speicherplatz.",
+        )
+    table_structure = st.toggle(
+        "Tabellenstruktur erkennen",
+        value=True,
+        help="Rekonstruiert Tabellen als Markdown-Tabellen. Deaktiviert ist "
+        "die Verarbeitung schneller, Tabellen werden aber zu Fließtext.",
+    )
     do_ocr = st.toggle(
         "OCR für gescannte PDFs",
         value=False,
@@ -446,6 +473,9 @@ with tab_convert:
 
         config = dw.ConverterConfig(
             do_ocr=do_ocr,
+            generate_picture_images=extract_images,
+            images_scale=images_scale,
+            do_table_structure=table_structure,
             on_success=on_success,
             archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
             notes_subdir=notes_subdir,

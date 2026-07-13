@@ -1,7 +1,8 @@
-"""Tests fuer job_manager: Inkrement, Retry-Cap, Lock, Historie."""
+"""Tests fuer job_manager: Inkrement, Retry-Cap, Lock, Historie, Watch."""
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -178,6 +179,54 @@ def test_history_recorded_and_capped(job_env):
     assert history[-1]["trigger"] == "watch"
     assert history[-1]["converted_failed"] == 1
     assert history[-1]["failures"][0]["error"] == "boom"
+
+
+def test_watch_polling_cycles(job_env):
+    """Polling-Modus: laeuft die gewuenschte Zahl an Zyklen und konvertiert."""
+    src, target, job = job_env
+    job.poll_interval = 1
+    summaries: list = []
+    jm.watch_job(
+        job, on_cycle=summaries.append, max_cycles=2,
+        use_events=False, convert_batch=_fake_batch_factory([]),
+    )
+    assert len(summaries) == 2
+    assert summaries[0].converted_ok == 2      # Erstlauf
+    assert summaries[1].converted_ok == 0      # nichts geaendert
+
+
+def test_watch_event_mode_wakes_on_change(job_env):
+    """Ereignismodus: eine neue Datei weckt den Watch vor dem Rescan-Intervall."""
+    pytest.importorskip("watchdog")
+    src, target, job = job_env
+    job.poll_interval = 120   # ohne Ereignis wuerde Zyklus 2 zwei Minuten warten
+    summaries: list = []
+    log: list = []
+
+    thread = threading.Thread(
+        target=jm.watch_job,
+        kwargs=dict(
+            job=job, on_cycle=summaries.append, max_cycles=2,
+            use_events=True, convert_batch=_fake_batch_factory(log),
+        ),
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while len(summaries) < 1 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert summaries, "Erstlauf ist nicht erfolgt"
+
+        (src / "neu.pdf").write_text("x")      # Ereignis ausloesen
+        thread.join(timeout=15)
+        assert not thread.is_alive(), "Ereignis hat den Watch nicht geweckt"
+    finally:
+        if thread.is_alive():                   # Aufraeumen bei Fehlschlag
+            thread.join(timeout=1)
+
+    assert len(summaries) == 2
+    assert summaries[1].converted_ok == 1
+    assert Path(log[-1]).name == "neu.pdf"
 
 
 def test_remove_job_cleans_all_state(job_env):

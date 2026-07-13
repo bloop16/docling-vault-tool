@@ -38,7 +38,6 @@ import json
 import os
 import sys
 import time
-import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -540,37 +539,93 @@ def _touch_last_run(job: Job) -> None:
             return
 
 
+def watchdog_available() -> bool:
+    """True, wenn das optionale ``watchdog``-Paket installiert ist."""
+    try:
+        import watchdog.observers  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def watch_job(
     job: Job,
     stop: Optional[Callable[[], bool]] = None,
     on_cycle: Optional[Callable[[JobRunSummary], None]] = None,
     max_cycles: Optional[int] = None,
+    use_events: bool | str = "auto",
+    convert_batch: Optional[Callable] = None,
 ) -> None:
-    """Ueberwacht den Quellordner per Polling und konvertiert Aenderungen laufend.
+    """Ueberwacht den Quellordner und konvertiert Aenderungen laufend.
 
-    Laeuft bis ``stop()`` True liefert bzw. bis ``max_cycles`` erreicht ist
+    Zwei Betriebsarten:
+
+    * **Ereignisse** (``watchdog`` installiert): Dateisystem-Ereignisse wecken
+      die Schleife sofort; ``poll_interval`` dient nur noch als Sicherheits-
+      Rescan (wichtig fuer Netzlaufwerke, auf denen Events unzuverlaessig
+      sind). Das Intervall kann damit gross gewaehlt werden.
+    * **Polling** (Fallback bzw. ``use_events=False``): fester Rescan alle
+      ``poll_interval`` Sekunden.
+
+    Laeuft bis ``stop()`` True liefert bzw. ``max_cycles`` erreicht ist
     (Letzteres v. a. fuer Tests). Ohne beides: Endlosschleife (Ctrl+C beendet).
     """
-    cycles = 0
-    while True:
-        if stop and stop():
-            return
+    observer = None
+    changed = None
+    if use_events is True or (use_events == "auto" and watchdog_available()):
         try:
-            summary = run_job(job, trigger="watch")
-        except JobLockedError:
-            summary = None
-        if summary and on_cycle:
-            on_cycle(summary)
-        cycles += 1
-        if max_cycles is not None and cycles >= max_cycles:
-            return
-        # Reaktionsschnell schlafen (in kleinen Schritten, damit stop() greift).
-        slept = 0.0
-        while slept < job.poll_interval:
+            import threading
+
+            from watchdog.events import FileSystemEventHandler
+            from watchdog.observers import Observer
+
+            changed = threading.Event()
+
+            class _AnyFileChange(FileSystemEventHandler):
+                def on_any_event(self, event):  # noqa: D102
+                    if not event.is_directory:
+                        changed.set()
+
+            observer = Observer()
+            observer.schedule(_AnyFileChange(), job.source, recursive=True)
+            observer.start()
+        except Exception:
+            if use_events is True:
+                raise
+            observer = None  # auto: still auf Polling zurueckfallen
+            changed = None
+
+    try:
+        cycles = 0
+        while True:
             if stop and stop():
                 return
-            time.sleep(min(1.0, job.poll_interval - slept))
-            slept += 1.0
+            try:
+                summary = run_job(job, trigger="watch", convert_batch=convert_batch)
+            except JobLockedError:
+                summary = None
+            if summary and on_cycle:
+                on_cycle(summary)
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                return
+            # Warten bis Ereignis oder Intervallende; in kleinen Schritten,
+            # damit stop() zeitnah greift.
+            slept = 0.0
+            while slept < job.poll_interval:
+                if stop and stop():
+                    return
+                if changed is not None and changed.is_set():
+                    # Schreib-Burst abwarten (Datei wird evtl. noch kopiert).
+                    time.sleep(1.0)
+                    changed.clear()
+                    break
+                time.sleep(min(1.0, job.poll_interval - slept))
+                slept += 1.0
+    finally:
+        if observer is not None:
+            observer.stop()
+            observer.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +653,12 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_add.add_argument("--workers", type=int, default=None)
     p_add.add_argument("--poll-interval", type=int, default=30)
     p_add.add_argument("--ocr", action="store_true")
+    p_add.add_argument("--no-images", action="store_true",
+                       help="Keine eingebetteten Bilder extrahieren")
+    p_add.add_argument("--images-scale", type=float, default=None,
+                       help="Skalierung der extrahierten Bilder (Default 2.0)")
+    p_add.add_argument("--no-tables", action="store_true",
+                       help="Tabellenstruktur-Erkennung deaktivieren")
     p_add.add_argument("--on-success", choices=["keep", "archive", "delete"], default=None)
     p_add.add_argument("--archive-dir", default=None)
     p_add.add_argument("--notes-subdir", default=None)
@@ -615,10 +676,15 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_hist.add_argument("job", help="Job-ID oder Name")
     p_hist.add_argument("-n", "--limit", type=int, default=20,
                         help="Anzahl der letzten Laeufe (Default 20)")
-    p_watch = sub.add_parser("watch", help="Ordner ueberwachen (Polling)")
+    p_watch = sub.add_parser("watch", help="Ordner ueberwachen (Ereignisse oder Polling)")
     p_watch.add_argument("job")
     p_watch.add_argument("-n", "--poll-interval", type=int, default=None,
-                         help="Intervall in Sekunden (ueberschreibt Job-Wert)")
+                         help="Rescan-Intervall in Sekunden (ueberschreibt Job-Wert)")
+    mode = p_watch.add_mutually_exclusive_group()
+    mode.add_argument("--events", action="store_true",
+                      help="Dateisystem-Ereignisse erzwingen (erfordert watchdog)")
+    mode.add_argument("--poll", action="store_true",
+                      help="Polling erzwingen (z. B. fuer Netzlaufwerke)")
 
     args = parser.parse_args(argv)
 
@@ -627,6 +693,12 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         config = dw.recommend_config(profile)
         if args.ocr:
             config.do_ocr = True
+        if args.no_images:
+            config.generate_picture_images = False
+        if args.images_scale is not None:
+            config.images_scale = args.images_scale
+        if args.no_tables:
+            config.do_table_structure = False
         if args.on_success:
             config.on_success = args.on_success
         if args.archive_dir:
@@ -704,8 +776,21 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         if args.cmd == "watch":
             if args.poll_interval:
                 job.poll_interval = args.poll_interval
-            print(f"Überwache {job.source} (Intervall {job.poll_interval}s). "
-                  f"Ctrl+C zum Beenden.")
+            if args.events and not watchdog_available():
+                print("Ereignismodus erfordert das Paket 'watchdog' "
+                      "(pip install watchdog).", file=sys.stderr)
+                return 2
+            use_events: bool | str = (
+                True if args.events else False if args.poll else "auto"
+            )
+            events_active = use_events is True or (
+                use_events == "auto" and watchdog_available()
+            )
+            mode_txt = (
+                f"Ereignisse + Sicherheits-Rescan alle {job.poll_interval}s"
+                if events_active else f"Polling alle {job.poll_interval}s"
+            )
+            print(f"Überwache {job.source} ({mode_txt}). Ctrl+C zum Beenden.")
 
             def _cycle(s: JobRunSummary):
                 if s.converted_ok or s.converted_failed:
@@ -713,7 +798,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
                     print(f"  [{ts}] +{s.converted_ok} konvertiert, "
                           f"{s.converted_failed} Fehler", flush=True)
             try:
-                watch_job(job, on_cycle=_cycle)
+                watch_job(job, on_cycle=_cycle, use_events=use_events)
             except KeyboardInterrupt:
                 print("\nBeendet.")
             return 0
@@ -721,5 +806,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     return 0
 
 
+def main() -> int:
+    """Einstiegspunkt fuer den ``docling-vault-jobs``-Konsolenbefehl."""
+    return _run_cli()
+
+
 if __name__ == "__main__":
-    raise SystemExit(_run_cli())
+    raise SystemExit(main())

@@ -672,6 +672,22 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         help="OCR aktivieren (langsam; nur fuer gescannte PDFs)",
     )
     parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Keine eingebetteten Bilder extrahieren (reine Textkonvertierung)",
+    )
+    parser.add_argument(
+        "--images-scale",
+        type=float,
+        default=2.0,
+        help="Skalierung der extrahierten Bilder (Default 2.0)",
+    )
+    parser.add_argument(
+        "--no-tables",
+        action="store_true",
+        help="Tabellenstruktur-Erkennung deaktivieren (schneller)",
+    )
+    parser.add_argument(
         "--on-success",
         choices=["keep", "archive", "delete"],
         default="keep",
@@ -723,6 +739,9 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     profile = analyze_vault(output_dir)
     config = recommend_config(profile)
     config.do_ocr = args.ocr
+    config.generate_picture_images = not args.no_images
+    config.images_scale = args.images_scale
+    config.do_table_structure = not args.no_tables
     config.on_success = args.on_success
     config.archive_dir = (
         str(Path(args.archive_dir).resolve()) if args.archive_dir else None
@@ -804,5 +823,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     return 1 if failed else 0
 
 
+def main() -> int:
+    """Einstiegspunkt fuer den ``docling-vault``-Konsolenbefehl."""
+    return _run_cli()
+
+
 if __name__ == "__main__":
-    raise SystemExit(_run_cli())
+    raise SystemExit(main())

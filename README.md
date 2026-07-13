@@ -31,9 +31,12 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `install_and_run.sh`  | Ein-Klick-Setup + Start für Linux/macOS |
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
 | `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
+| `dashboard_launcher.py` | Einstiegspunkt für den `docling-vault-ui`-Befehl |
+| `pyproject.toml`    | Paketdefinition mit Konsolenbefehlen |
+| `deploy/`           | Dienst-Vorlagen (systemd, Windows-Aufgabenplanung) |
 | `tests/`            | Testsuite (läuft ohne installiertes Docling) |
 | `requirements.txt`  | Abhängigkeiten (Docling + Streamlit) |
-| `requirements-dev.txt` | Entwicklungsabhängigkeiten (pytest) |
+| `requirements-dev.txt` | Entwicklungsabhängigkeiten (pytest, watchdog) |
 | `.streamlit/config.toml` | Theme für das Dashboard |
 
 ## Dashboard
@@ -48,8 +51,28 @@ Zwei Bereiche:
   ausführen und den Lauf-Verlauf einsehen; der Befehl für die dauerhafte
   Ordnerüberwachung wird pro Job angezeigt.
 
+In der Seitenleiste lassen sich die Docling-Funktionen je Lauf zuschalten:
+**Bilder extrahieren** (inklusive Skalierung der Bildauflösung),
+**Tabellenstruktur erkennen** und **OCR für gescannte PDFs**. Die Auswahl gilt
+auch für Jobs, die aus den aktuellen Einstellungen angelegt werden.
+
 Das Theme kommt aus `.streamlit/config.toml`, die Feinabstimmung per CSS in
 `app_streamlit.py`.
+
+## Installation als Paket
+
+Alternativ zum Setup-Skript lässt sich das Tool als Python-Paket installieren
+und stellt dann drei Konsolenbefehle bereit:
+
+```bash
+pip install .            # oder: pip install .[watch] für den Ereignismodus
+```
+
+| Befehl | Zweck |
+|--------|-------|
+| `docling-vault`      | Batch-Konvertierung per CLI (entspricht `docling_worker.py`) |
+| `docling-vault-jobs` | Jobs verwalten: `add`, `list`, `plan`, `run`, `history`, `watch`, `rm` |
+| `docling-vault-ui`   | Dashboard starten (Streamlit-Optionen wie `--server.port 8080` anhängbar) |
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
@@ -129,6 +152,9 @@ Oder direkt über das Setup-Skript:
 | `--output` / `-o` | Ziel-Vault-Ordner |
 | `--workers` / `-w`| Parallele Prozesse (Default: CPU-Kerne − 1) |
 | `--ocr`           | OCR aktivieren (langsam; nur für gescannte PDFs) |
+| `--no-images`     | Keine eingebetteten Bilder extrahieren (reine Textkonvertierung) |
+| `--images-scale`  | Skalierung der extrahierten Bilder (Default 2.0) |
+| `--no-tables`     | Tabellenstruktur-Erkennung deaktivieren (schneller) |
 | `--on-success`    | Was mit erfolgreich konvertierten Originalen passiert: `keep` (Default), `archive`, `delete` |
 | `--archive-dir`   | Zielordner für `--on-success archive` (spiegelt die Quellstruktur) |
 | `--notes-subdir`  | Unterordner im Ziel für die Notizen (überschreibt Empfehlung; `""` = Wurzel) |
@@ -178,12 +204,40 @@ python job_manager.py list
 python job_manager.py plan    Berichte        # Dry-Run: was würde passieren?
 python job_manager.py run     Berichte        # inkrementell konvertieren
 python job_manager.py history Berichte -n 20  # letzte Läufe anzeigen
-python job_manager.py watch   Berichte -n 30  # Ordner überwachen (alle 30 s)
+python job_manager.py watch   Berichte -n 30  # Ordner überwachen
 python job_manager.py rm      Berichte
 ```
 
-Für dauerhaften Betrieb `watch` als Dienst starten (z. B. systemd-Service,
-`cron @reboot`, Docker-Container oder n8n-Exec-Node).
+(Bei Paketinstallation entsprechend `docling-vault-jobs add …` usw.)
+
+### Überwachungsmodi: Ereignisse oder Polling
+
+`watch` kennt zwei Betriebsarten:
+
+- **Ereignisse** (automatisch aktiv, wenn das Paket `watchdog` installiert ist,
+  z. B. via `pip install .[watch]`): Dateisystem-Ereignisse stoßen die
+  Verarbeitung sofort an. Das Intervall (`-n`) dient nur noch als
+  Sicherheits-Rescan und kann groß gewählt werden (z. B. 300 s).
+- **Polling** (Fallback bzw. erzwingbar mit `--poll`): fester Rescan im
+  Intervall. Empfohlen für Netzlaufwerke, auf denen Dateisystem-Ereignisse
+  unzuverlässig ankommen.
+
+`--events` erzwingt den Ereignismodus und bricht mit einer Meldung ab, falls
+`watchdog` fehlt. Beim Start wird der aktive Modus ausgegeben.
+
+### Dauerhafter Betrieb als Dienst
+
+Vorlagen liegen unter `deploy/`:
+
+- **Linux (systemd):** `deploy/systemd/docling-vault-watch@.service` anpassen,
+  nach `/etc/systemd/system/` kopieren, dann
+  `systemctl enable --now docling-vault-watch@<job-id>`.
+- **Windows:** `deploy/windows/register_watch_task.ps1 -JobId <job-id>`
+  registriert eine Aufgabe, die die Überwachung bei der Anmeldung startet und
+  bei Fehlern neu anläuft.
+
+Alternativ funktionieren auch `cron @reboot`, ein Docker-Container oder ein
+n8n-Exec-Node.
 
 ## Fehleranalyse
 
