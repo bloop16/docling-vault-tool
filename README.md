@@ -30,6 +30,7 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `app_streamlit.py`  | Streamlit-Dashboard (Fortschritt, ETA, Erfolg/Fehler, Fehlerprotokoll-Download) |
 | `install_and_run.sh`  | Ein-Klick-Setup + Start für Linux/macOS |
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
+| `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
 | `requirements.txt`  | Abhängigkeiten (Docling + Streamlit) |
 | `.streamlit/config.toml` | Basis-Theme (dunkel/technisch) für das Dashboard |
 
@@ -124,6 +125,46 @@ Oder direkt über das Setup-Skript:
 | `--no-frontmatter`| Kein YAML-Frontmatter voranstellen |
 | `--yes` / `-y`    | Integrationsplan ohne Rückfrage bestätigen |
 | `--error-log`     | Pfad für ein JSON-Fehlerprotokoll fehlgeschlagener Dateien |
+
+## Jobs & Ordnerüberwachung (sichere, inkrementelle Verarbeitung)
+
+Ein **Job** verknüpft einen Quellordner mit einem Zielordner (Vault) plus dem
+bestätigten Integrationsplan. Jobs laufen einmalig oder als **Ordnerüberwachung**
+(Polling) und verarbeiten bei jedem Lauf nur **neue oder geänderte** Dateien.
+
+Warum „sicher":
+
+- **Inkrementell & idempotent** – ein Manifest je Job (Größe/mtime/SHA-256) sorgt
+  dafür, dass unveränderte Dateien übersprungen werden.
+- **Wiederaufsetzbar** – bricht ein Lauf ab, gelten noch nicht eingetragene
+  Dateien beim nächsten Lauf wieder als offen; das Manifest wird atomar geschrieben.
+- **Sperre** gegen parallele Läufe desselben Jobs (Lockfile, mit Stale-Erkennung).
+- **Nicht-destruktiv** – gelöschte Quelldateien werden nur gemeldet, nie werden
+  Zieldateien automatisch entfernt.
+- **Begrenzte Wiederholung** – dauerhaft fehlerhafte Dateien werden nach
+  `RETRY_LIMIT` Versuchen nicht endlos neu verarbeitet (eine echte Änderung
+  reaktiviert sie).
+
+Konfiguration/Status liegen nutzerspezifisch unter `DOCLING_VAULT_HOME` bzw. dem
+OS-Standard (`~/.config/docling-vault-tool`, `%APPDATA%`, `~/Library/…`).
+
+**Im Dashboard:** Abschnitt *Automatisierung: Jobs & Ordnerüberwachung* – Job aus
+den aktuellen Einstellungen anlegen, „🔍 Prüfen" (Dry-Run), „▶️ Ausführen"
+(inkrementell), löschen; der Watch-Befehl wird pro Job angezeigt.
+
+**CLI:**
+
+```bash
+python job_manager.py add   --name "Berichte" --source SRC --target VAULT
+python job_manager.py list
+python job_manager.py plan  Berichte      # Dry-Run: was würde passieren?
+python job_manager.py run   Berichte      # inkrementell konvertieren
+python job_manager.py watch Berichte -n 30  # Ordner überwachen (alle 30 s)
+python job_manager.py rm    Berichte
+```
+
+Für dauerhaften Betrieb `watch` als Dienst starten (z. B. systemd-Service,
+`cron @reboot`, Docker-Container oder n8n-Exec-Node).
 
 ## Fehleranalyse
 

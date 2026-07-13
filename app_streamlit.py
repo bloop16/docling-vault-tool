@@ -22,6 +22,7 @@ from pathlib import Path
 import streamlit as st
 
 import docling_worker as dw
+import job_manager as jm
 
 st.set_page_config(
     page_title="Docling Vault Tool",
@@ -679,3 +680,79 @@ if confirm and config is not None:
             file_name="docling_fehler.csv",
             mime="text/csv",
         )
+
+
+# ---------------------------------------------------------------------------
+# Automatisierung: Jobs & Ordnerueberwachung
+# ---------------------------------------------------------------------------
+_section("🗓️ Automatisierung: Jobs & Ordnerüberwachung")
+st.caption(
+    "**Sichere, inkrementelle Jobs:** verknüpfen Quell- und Ziel-Ordner mit dem "
+    "bestätigten Plan. Bei jedem Lauf werden nur **neue oder geänderte** Dateien "
+    "verarbeitet (idempotent, wiederaufsetzbar, mit Sperre gegen Doppelläufe)."
+)
+
+with st.expander("➕ Neuen Job aus den aktuellen Einstellungen anlegen"):
+    if not input_dir or not output_dir:
+        st.info("Quell- und Ziel-Ordner in der Sidebar angeben.")
+    elif config is None:
+        st.info(
+            "Zuerst **„Ziel analysieren & Plan erstellen“** ausführen — der Job "
+            "übernimmt exakt diesen bestätigten Integrationsplan."
+        )
+    else:
+        jn_col, jp_col = st.columns([2, 1])
+        job_name = jn_col.text_input(
+            "Job-Name", value=(Path(output_dir).name or "Job"), key="new_job_name"
+        )
+        poll = jp_col.number_input(
+            "Watch-Intervall (Sek.)", min_value=5, value=30, step=5, key="new_job_poll"
+        )
+        for line in dw.describe_plan(profile, config):
+            st.caption(f"• {line}")
+        if st.button("💾 Job speichern", key="save_job"):
+            newjob = jm.add_job(
+                job_name, input_dir, output_dir, config,
+                poll_interval=int(poll), max_workers=max_workers,
+            )
+            st.success(f"Job „{newjob.name}“ angelegt ({newjob.id}).")
+
+jobs = jm.load_jobs()
+if not jobs:
+    st.caption("Noch keine Jobs angelegt.")
+for j in jobs:
+    with st.container(border=True):
+        head, act = st.columns([3, 2])
+        head.markdown(f"**{j.name}**  ·  `{j.id}`")
+        head.caption(f"{j.source}  →  {j.target}")
+        manifest = jm.load_manifest(j.id)
+        done_n = sum(1 for e in manifest.values() if e.get("status") == "ok")
+        head.caption(f"Bereits konvertiert: {done_n} · Letzter Lauf: {j.last_run_at or '—'}")
+
+        b1, b2, b3 = act.columns(3)
+        if b1.button("🔍 Prüfen", key=f"plan_{j.id}", help="Dry-Run: was steht an?"):
+            summary = jm.run_job(j, dry_run=True)
+            st.session_state[f"plan_{j.id}"] = summary.changes
+        if b2.button("▶️ Ausführen", key=f"run_{j.id}", help="Änderungen jetzt konvertieren"):
+            try:
+                with st.spinner("Konvertiere neue/geänderte Dateien…"):
+                    summary = jm.run_job(j)
+                st.success(
+                    f"{summary.converted_ok} konvertiert, "
+                    f"{summary.converted_failed} Fehler "
+                    f"(neu={summary.changes['neu']}, geändert={summary.changes['geaendert']})."
+                )
+            except jm.JobLockedError as exc:
+                st.warning(str(exc))
+        if b3.button("🗑️", key=f"del_{j.id}", help="Job löschen"):
+            jm.remove_job(j.id)
+            st.rerun()
+
+        pending = st.session_state.get(f"plan_{j.id}")
+        if pending:
+            st.caption(
+                "Anstehend — "
+                + " · ".join(f"{k}: {v}" for k, v in pending.items())
+            )
+        st.caption("Dauerhafte Ordnerüberwachung (läuft als eigener Prozess/Dienst):")
+        st.code(f"python job_manager.py watch {j.id}", language="bash")
