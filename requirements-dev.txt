@@ -1,0 +1,4 @@
+# Entwicklungs-/Testabhaengigkeiten (Laufzeit: siehe requirements.txt).
+pytest>=8
+# Optional zur Laufzeit (Ereignismodus der Ordnerueberwachung), hier fuer Tests.
+watchdog>=4

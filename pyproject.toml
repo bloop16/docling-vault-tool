@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docling-vault-tool"
+version = "0.1.0"
+description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in strukturierte Markdown-Vaults mit Docling"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "docling>=2.0",
+    "streamlit>=1.48",
+]
+
+[project.optional-dependencies]
+# Ereignisbasierte Ordnerueberwachung statt Polling (empfohlen fuer lokale Platten).
+watch = ["watchdog>=4"]
+dev = ["pytest>=8", "watchdog>=4"]
+
+[project.scripts]
+docling-vault = "docling_worker:main"
+docling-vault-jobs = "job_manager:main"
+docling-vault-ui = "dashboard_launcher:main"
+
+[tool.setuptools]
+py-modules = ["docling_worker", "job_manager", "app_streamlit", "dashboard_launcher"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

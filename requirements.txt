@@ -1,0 +1,5 @@
+# Kernabhaengigkeiten fuer das Docling Vault Tool.
+# Docling entwickelt sich schnell; bei API-Aenderungen ggf. Version pinnen.
+# Streamlit >= 1.48 wegen width="stretch" (ersetzt use_container_width).
+docling>=2.0
+streamlit>=1.48
