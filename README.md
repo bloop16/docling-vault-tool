@@ -66,6 +66,32 @@ Quell- und Ziel-Ordner werden im Dashboard eingetragen.
 
 Installiert Python bei Bedarf via `winget`, richtet die Umgebung ein und startet das Dashboard.
 
+## Zielordner & Vault-Integration
+
+Das Tool ist für beliebige Nutzer und Zielordner gedacht. Der angegebene
+Zielordner wird **vor** der Konvertierung analysiert und daraus ein
+Integrationsplan abgeleitet, der **einmal für den gesamten Batch** bestätigt wird
+(keine Rückfrage pro Datei):
+
+- **Neuer/leerer Ordner** → Struktur wird frisch aufgebaut (`assets/` für Bilder,
+  gespiegelte Quellstruktur, YAML-Frontmatter).
+- **Bestehender Obsidian-Vault** (`.obsidian/`) → wird analysiert und die Dateien
+  werden **entsprechend der Vault-Konventionen** eingegliedert:
+  - Anhang-Ordner aus `.obsidian/app.json` (`attachmentFolderPath`) wird
+    übernommen — zentral (`attachments/`, `assets/`, …) oder „neben der Notiz".
+  - Frontmatter/Properties nur, wenn der Vault sie ohnehin nutzt.
+  - Notizen kommen standardmäßig in einen dedizierten Unterordner
+    (`Docling Import/`), damit ein kuratierter Vault nicht zugemüllt wird —
+    umstellbar auf die Vault-Wurzel (fügt sich dann in bestehende gleichnamige
+    Ordner ein).
+- **Logseq-Graph** (`logseq/`) → Notizen nach `pages/`, Anhänge nach `assets/`.
+- **Bestehender Nicht-Vault-Ordner** → erkannter Anhang-Ordner wird
+  wiederverwendet, sonst `assets/`.
+
+Im Dashboard: **„🔎 Ziel analysieren & Plan erstellen"** → Plan prüfen/anpassen →
+**„🚀 Plan bestätigen & konvertieren"**. In der CLI wird der Plan ausgegeben und
+einmal abgefragt (mit `--yes` überspringbar).
+
 ## Nutzung ohne Dashboard (CLI)
 
 ```bash
@@ -93,6 +119,10 @@ Oder direkt über das Setup-Skript:
 | `--ocr`           | OCR aktivieren (langsam; nur für gescannte PDFs) |
 | `--on-success`    | Was mit erfolgreich konvertierten Originalen passiert: `keep` (Default), `archive`, `delete` |
 | `--archive-dir`   | Zielordner für `--on-success archive` (spiegelt die Quellstruktur) |
+| `--notes-subdir`  | Unterordner im Ziel für die Notizen (überschreibt Empfehlung; `""` = Wurzel) |
+| `--attachments-subdir` | Name des zentralen Anhang-Ordners (überschreibt Empfehlung) |
+| `--no-frontmatter`| Kein YAML-Frontmatter voranstellen |
+| `--yes` / `-y`    | Integrationsplan ohne Rückfrage bestätigen |
 | `--error-log`     | Pfad für ein JSON-Fehlerprotokoll fehlgeschlagener Dateien |
 
 ## Fehleranalyse

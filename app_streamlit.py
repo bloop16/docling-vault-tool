@@ -377,10 +377,10 @@ st.session_state["output_dir"] = output_dir
 scanned = st.session_state.get("scanned_files")
 _pipeline(len(scanned) if scanned else None)
 
-col_scan, col_start = st.columns([1, 1])
+col_scan, col_analyze = st.columns([1, 1])
 scan = col_scan.button("🔍 Dateien scannen", use_container_width=True)
-start = col_start.button(
-    "🚀 Konvertierung starten", type="primary", use_container_width=True
+analyze = col_analyze.button(
+    "🔎 Ziel analysieren & Plan erstellen", type="primary", use_container_width=True
 )
 
 if scan:
@@ -395,14 +395,130 @@ if st.session_state.get("scanned_files"):
     st.caption(f"📦 Zuletzt gescannt: {len(st.session_state['scanned_files'])} Datei(en).")
 
 # ---------------------------------------------------------------------------
-# Konvertierung
+# Schritt 1: Zielordner analysieren -> Profil + Empfehlung merken
 # ---------------------------------------------------------------------------
-if start:
-    if not input_dir or not Path(input_dir).is_dir():
-        st.error("Bitte einen gültigen Quellordner angeben.")
-        st.stop()
+if analyze:
     if not output_dir:
         st.error("Bitte einen Ziel-Vault-Ordner angeben.")
+    else:
+        profile = dw.analyze_vault(output_dir)
+        st.session_state["vault_profile"] = profile
+        st.session_state["vault_profile_target"] = output_dir
+        st.session_state["plan_reco"] = dw.recommend_config(profile)
+
+# Analyse gilt nur, solange der Zielordner unveraendert ist.
+profile = st.session_state.get("vault_profile")
+profile_valid = profile is not None and st.session_state.get(
+    "vault_profile_target"
+) == output_dir
+
+# ---------------------------------------------------------------------------
+# Schritt 2: Integrationsplan anzeigen, anpassen und EINMAL bestaetigen
+# ---------------------------------------------------------------------------
+confirm = False
+config: dw.ConverterConfig | None = None
+if profile_valid:
+    reco = st.session_state["plan_reco"]
+
+    _section("🧭 Zielordner-Analyse")
+    type_label = {
+        "obsidian": "🗄️ Obsidian-Vault",
+        "logseq": "🗄️ Logseq-Graph",
+        "folder": "📁 Bestehender Ordner (kein Vault)",
+        "new": "✨ Neuer Ordner (wird angelegt)",
+    }.get(profile.vault_type, profile.vault_type)
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Zieltyp", type_label.split(" ", 1)[-1])
+    a2.metric("Vorhandene Notizen", profile.note_count)
+    a3.metric("Top-Ordner", len(profile.top_level_folders))
+    for obs in profile.observations:
+        st.caption(f"• {obs}")
+    if profile.top_level_folders:
+        st.caption(
+            "Bestehende Ordner: "
+            + ", ".join(profile.top_level_folders[:12])
+            + (" …" if len(profile.top_level_folders) > 12 else "")
+        )
+
+    _section("🗺️ Integrationsplan")
+    if profile.vault_type in ("obsidian", "logseq") and not profile.is_empty:
+        st.info(
+            "Bestehender Vault erkannt — die Dateien werden **entsprechend der "
+            "Vault-Konventionen** eingegliedert. Bitte den Plan prüfen und "
+            "**einmal für den ganzen Batch** bestätigen."
+        )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        placement = st.radio(
+            "Notizen ablegen",
+            options=["In Unterordner", "In Ziel-Wurzel"],
+            index=0 if reco.notes_subdir else 1,
+            help="In einen dedizierten Unterordner (schont einen kuratierten "
+            "Vault) oder direkt in die Wurzel (fügt sich in bestehende "
+            "gleichnamige Ordner ein).",
+        )
+        default_sub = reco.notes_subdir or dw.DEFAULT_IMPORT_SUBDIR
+        notes_subdir = ""
+        if placement == "In Unterordner":
+            notes_subdir = st.text_input("Unterordner-Name", value=default_sub)
+        add_frontmatter = st.toggle(
+            "Frontmatter/Properties schreiben",
+            value=reco.add_frontmatter,
+            help="Obsidian liest YAML-Frontmatter als Properties "
+            "(source, original_path, assets_folder).",
+        )
+    with c2:
+        attach_adjacent = st.toggle(
+            "Anhänge neben der Notiz",
+            value=(reco.attachments_mode == "adjacent"),
+            help="An = per-Notiz-Ordner (folgt der Obsidian-Einstellung "
+            "„neben der Notiz“). Aus = ein zentraler Anhang-Ordner.",
+        )
+        attachments_subdir = reco.attachments_subdir
+        if not attach_adjacent:
+            attachments_subdir = st.text_input(
+                "Zentraler Anhang-Ordner", value=reco.attachments_subdir or "assets"
+            )
+        mirror = st.toggle(
+            "Quellstruktur spiegeln",
+            value=reco.mirror_structure,
+            help="Unterordner-Struktur des Quellordners im Ziel nachbilden.",
+        )
+
+    config = dw.ConverterConfig(
+        do_ocr=do_ocr,
+        on_success=on_success,
+        archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
+        notes_subdir=notes_subdir,
+        mirror_structure=mirror,
+        attachments_mode="adjacent" if attach_adjacent else "central",
+        attachments_subdir=attachments_subdir,
+        add_frontmatter=add_frontmatter,
+    )
+
+    # Plan-Zusammenfassung (genau das, was bestätigt wird).
+    st.markdown("**Zusammenfassung:**")
+    for line in dw.describe_plan(profile, config):
+        st.markdown(f"- {line}")
+
+    confirm = st.button(
+        "🚀 Plan bestätigen & konvertieren",
+        type="primary",
+        use_container_width=True,
+    )
+else:
+    st.info(
+        "Ziel-Vault-Ordner angeben und **„Ziel analysieren & Plan erstellen“** "
+        "klicken — danach wird der Integrationsplan zur Bestätigung angezeigt."
+    )
+
+# ---------------------------------------------------------------------------
+# Schritt 3: Konvertierung (erst nach Bestaetigung des Plans)
+# ---------------------------------------------------------------------------
+if confirm and config is not None:
+    if not input_dir or not Path(input_dir).is_dir():
+        st.error("Bitte einen gültigen Quellordner angeben.")
         st.stop()
     if on_success == "archive" and not archive_dir:
         st.error("Für 'Ins Archiv verschieben' bitte einen Archiv-Ordner angeben.")
@@ -417,12 +533,6 @@ if start:
     if total == 0:
         st.warning("Keine unterstützten Dateien gefunden.")
         st.stop()
-
-    config = dw.ConverterConfig(
-        do_ocr=do_ocr,
-        on_success=on_success,
-        archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
-    )
 
     _section("Fortschritt")
     progress = st.progress(0.0)
