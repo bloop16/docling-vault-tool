@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import time
 import traceback
 from dataclasses import dataclass, asdict
@@ -50,12 +51,19 @@ class ConverterConfig:
 
     OCR ist standardmaessig aus (``do_ocr=False``) -- nur fuer gescannte PDFs
     ohne Textlayer gezielt aktivieren, da deutlich langsamer.
+
+    ``on_success`` steuert, was nach erfolgreicher Konvertierung mit der
+    Originaldatei passiert: ``"keep"`` (Default, nichts), ``"archive"``
+    (nach ``archive_dir`` verschieben, Struktur bleibt erhalten) oder
+    ``"delete"`` (Original loeschen -- unwiderruflich).
     """
 
     do_ocr: bool = False
     generate_picture_images: bool = True
     images_scale: float = 2.0
     do_table_structure: bool = True
+    on_success: str = "keep"
+    archive_dir: Optional[str] = None
 
 
 @dataclass
@@ -68,7 +76,13 @@ class ConversionResult:
     assets_folder: Optional[str] = None
     num_images: int = 0
     duration_s: float = 0.0
-    error: Optional[str] = None
+    # Fehlerinformationen (nur bei success=False gesetzt):
+    error: Optional[str] = None           # knappe Zeile: "Typ: Nachricht"
+    error_category: Optional[str] = None  # klassifiziert, z. B. "passwortgeschützt"
+    error_hint: Optional[str] = None      # Klartext-Handlungshinweis
+    error_detail: Optional[str] = None    # voller Traceback (echte Ursache)
+    # Nachbearbeitung des Originals (archive/delete):
+    moved_to: Optional[str] = None
 
 
 def build_converter(config: Optional[ConverterConfig] = None):
@@ -159,6 +173,79 @@ def _yaml_frontmatter(fields: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+# Klassifizierung der haeufigsten Fehlerursachen -> (Kategorie, Klartext-Hinweis).
+# Reihenfolge = Prioritaet; erste passende Regel gewinnt. Gematcht wird gegen
+# Exceptionklasse + Nachricht + Traceback (kleingeschrieben).
+_ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
+    (
+        ("password", "encrypted", "passwort", "verschlüss", "decrypt", "is protected"),
+        "passwortgeschützt",
+        "Datei ist passwort-/verschluesselungsgeschuetzt — vor der Konvertierung entsperren.",
+    ),
+    (
+        ("no such file", "does not exist", "filenotfound", "permission denied"),
+        "nicht lesbar",
+        "Datei nicht gefunden oder keine Leserechte.",
+    ),
+    (
+        ("memoryerror", "cannot allocate", "out of memory", "oom", "killed"),
+        "speicher",
+        "Zu wenig Arbeitsspeicher — Anzahl paralleler Prozesse reduzieren.",
+    ),
+    (
+        ("timeout", "timed out"),
+        "timeout",
+        "Zeitueberschreitung bei der Verarbeitung — Datei ggf. sehr gross/komplex.",
+    ),
+    (
+        ("unsupported", "no backend", "not supported", "unknown format"),
+        "nicht unterstützt",
+        "Format/Variante wird von Docling nicht unterstuetzt.",
+    ),
+    (
+        ("corrupt", "damaged", "eof marker", "not a pdf", "invalid", "broken",
+         "cannot read", "failed to parse", "malformed", "bad", "truncated",
+         "zip file", "not a zip"),
+        "beschädigt",
+        "Datei ist vermutlich beschaedigt oder kein gueltiges Dokument.",
+    ),
+]
+
+
+def _classify_error(text: str) -> tuple[str, str]:
+    """Ordnet einen Fehlertext einer Kategorie + Klartext-Hinweis zu."""
+    low = text.lower()
+    for keywords, category, hint in _ERROR_RULES:
+        if any(k in low for k in keywords):
+            return category, hint
+    return "fehler", "Unerwarteter Fehler — vollstaendige Ursache siehe Details/Traceback."
+
+
+def _apply_post_action(
+    source: Path,
+    config: ConverterConfig,
+    input_root: Optional[os.PathLike | str],
+) -> Optional[str]:
+    """Verschiebt/loescht das Original nach erfolgreicher Konvertierung.
+
+    Gibt das Zielverzeichnis (bei ``archive``) bzw. ``"<geloescht>"`` zurueck,
+    oder ``None`` wenn nichts getan wurde.
+    """
+    if config.on_success == "archive" and config.archive_dir:
+        try:
+            rel = source.relative_to(input_root) if input_root else Path(source.name)
+        except ValueError:
+            rel = Path(source.name)
+        dest = Path(config.archive_dir) / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(dest))
+        return str(dest)
+    if config.on_success == "delete":
+        source.unlink()
+        return "<geloescht>"
+    return None
+
+
 def convert_single_file(
     source_path: os.PathLike | str,
     output_dir: os.PathLike | str,
@@ -170,9 +257,12 @@ def convert_single_file(
 
     Die Verzeichnisstruktur relativ zu ``input_root`` wird im ``output_dir``
     (dem Vault) gespiegelt. Bilder landen unter ``output_dir/assets/<key>/``.
-    Fehler werden abgefangen und als ``ConversionResult(success=False)``
-    zurueckgegeben -- ein kaputtes Dokument bricht den Batch nicht ab.
+    Fehler werden abgefangen, klassifiziert und mit vollem Traceback als
+    ``ConversionResult(success=False)`` zurueckgegeben -- ein kaputtes Dokument
+    bricht den Batch nicht ab.
     """
+    if config is None:
+        config = ConverterConfig()
     start = time.perf_counter()
     source = Path(source_path)
     out_root = Path(output_dir)
@@ -226,6 +316,9 @@ def convert_single_file(
         body = md_path.read_text(encoding="utf-8")
         md_path.write_text(frontmatter + body, encoding="utf-8")
 
+        # Original erst NACH erfolgreichem Schreiben archivieren/loeschen.
+        moved_to = _apply_post_action(source, config, input_root)
+
         return ConversionResult(
             source_path=str(source),
             success=True,
@@ -233,13 +326,20 @@ def convert_single_file(
             assets_folder=str(assets_dir) if assets_rel else None,
             num_images=num_images,
             duration_s=time.perf_counter() - start,
+            moved_to=moved_to,
         )
     except Exception as exc:  # noqa: BLE001 -- Batch soll robust weiterlaufen
+        detail = traceback.format_exc()
+        concise = f"{type(exc).__name__}: {exc}".strip()
+        category, hint = _classify_error(f"{type(exc).__name__} {exc}\n{detail}")
         return ConversionResult(
             source_path=str(source),
             success=False,
             duration_s=time.perf_counter() - start,
-            error=f"{type(exc).__name__}: {exc}".strip(),
+            error=concise,
+            error_category=category,
+            error_hint=hint,
+            error_detail=detail.strip(),
         )
 
 
@@ -302,6 +402,18 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         help="OCR aktivieren (langsam; nur fuer gescannte PDFs)",
     )
     parser.add_argument(
+        "--on-success",
+        choices=["keep", "archive", "delete"],
+        default="keep",
+        help="Was mit erfolgreich konvertierten Originalen passiert "
+        "(keep=behalten, archive=verschieben, delete=loeschen)",
+    )
+    parser.add_argument(
+        "--archive-dir",
+        default=None,
+        help="Zielordner fuer --on-success archive",
+    )
+    parser.add_argument(
         "--error-log",
         default=None,
         help="Optionaler Pfad fuer ein JSON-Fehlerprotokoll",
@@ -312,9 +424,15 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     output_dir = Path(args.output).resolve()
     if not input_root.is_dir():
         parser.error(f"Quellordner existiert nicht: {input_root}")
+    if args.on_success == "archive" and not args.archive_dir:
+        parser.error("--on-success archive erfordert --archive-dir")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = ConverterConfig(do_ocr=args.ocr)
+    config = ConverterConfig(
+        do_ocr=args.ocr,
+        on_success=args.on_success,
+        archive_dir=str(Path(args.archive_dir).resolve()) if args.archive_dir else None,
+    )
     files = discover_files(input_root)
     total = len(files)
     if total == 0:
@@ -350,6 +468,13 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             )
 
     print(f"\nFertig: {ok} erfolgreich, {len(failed)} fehlgeschlagen.")
+    if failed:
+        by_cat: dict[str, int] = {}
+        for r in failed:
+            by_cat[r.error_category or "fehler"] = by_cat.get(r.error_category or "fehler", 0) + 1
+        print("Fehler nach Kategorie:")
+        for cat, count in sorted(by_cat.items(), key=lambda kv: -kv[1]):
+            print(f"  {cat}: {count}")
     if failed and args.error_log:
         Path(args.error_log).write_text(
             json.dumps([asdict(r) for r in failed], ensure_ascii=False, indent=2),

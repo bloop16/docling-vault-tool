@@ -80,7 +80,36 @@ Oder direkt über das Setup-Skript:
 | `--output` / `-o` | Ziel-Vault-Ordner |
 | `--workers` / `-w`| Parallele Prozesse (Default: CPU-Kerne − 1) |
 | `--ocr`           | OCR aktivieren (langsam; nur für gescannte PDFs) |
+| `--on-success`    | Was mit erfolgreich konvertierten Originalen passiert: `keep` (Default), `archive`, `delete` |
+| `--archive-dir`   | Zielordner für `--on-success archive` (spiegelt die Quellstruktur) |
 | `--error-log`     | Pfad für ein JSON-Fehlerprotokoll fehlgeschlagener Dateien |
+
+## Fehleranalyse
+
+Fehlgeschlagene Dateien brechen den Batch nicht ab. Für jede wird festgehalten,
+**was wirklich schiefgelaufen ist**:
+
+- **Kategorie** (automatisch klassifiziert): z. B. `passwortgeschützt`, `beschädigt`,
+  `speicher`, `timeout`, `nicht unterstützt`
+- **Klartext-Hinweis** zur Behebung
+- **vollständiger Traceback** (die echte Ursache)
+- **Quellenlink**: im Dashboard je Datei ein `file://`-Link zum direkten Öffnen der
+  Datei bzw. des Ordners im Ursprungspfad (plus Klartext-Pfad zum Kopieren, falls der
+  Browser `file://` blockiert)
+
+Im Dashboard erscheint das als Tabelle (mit Öffnen-/Ordner-Links) plus aufklappbare
+Details je Datei; zusätzlich als CSV-Download. In der CLI schreibt `--error-log` ein
+JSON mit denselben Feldern und gibt eine Kategorie-Übersicht aus.
+
+## Originale nach der Konvertierung aufräumen (optional)
+
+Standardmäßig bleiben die Originale unangetastet. Optional lassen sich erfolgreich
+konvertierte Originale automatisch **ins Archiv verschieben** (Struktur bleibt erhalten)
+oder **löschen**. **Fehlgeschlagene Dateien bleiben immer erhalten** — es wird nur nach
+erfolgreichem Schreiben der `.md` aufgeräumt.
+
+- Dashboard: Sidebar → *Nach erfolgreicher Konvertierung*
+- CLI: `--on-success archive --archive-dir /pfad/zum/archiv` bzw. `--on-success delete`
 
 ## Beispiel-Ausgabe
 

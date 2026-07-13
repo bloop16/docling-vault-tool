@@ -47,10 +47,30 @@ def _format_duration(seconds: float) -> str:
 def _errors_to_csv(results: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["source_path", "error", "duration_s"])
+    writer.writerow(
+        ["datei", "kategorie", "hinweis", "fehler", "pfad", "traceback", "dauer_s"]
+    )
     for r in results:
-        writer.writerow([r.source_path, r.error or "", f"{r.duration_s:.2f}"])
+        writer.writerow(
+            [
+                Path(r.source_path).name,
+                r.error_category or "",
+                r.error_hint or "",
+                r.error or "",
+                r.source_path,
+                (r.error_detail or "").replace("\r\n", "\n"),
+                f"{r.duration_s:.2f}",
+            ]
+        )
     return buf.getvalue().encode("utf-8")
+
+
+def _file_uri(path: str) -> str:
+    """file://-URI zum direkten Oeffnen/Anspringen im Ursprungsordner."""
+    try:
+        return Path(path).resolve().as_uri()
+    except Exception:  # noqa: BLE001 -- z. B. relativer/ungueltiger Pfad
+        return ""
 
 
 # --- Konfiguration ---------------------------------------------------------
@@ -79,6 +99,30 @@ with st.sidebar:
         value=False,
         help="Nur fuer gescannte PDFs ohne Textlayer. Deutlich langsamer.",
     )
+    st.divider()
+    st.subheader("Nach erfolgreicher Konvertierung")
+    on_success_label = st.radio(
+        "Mit Originaldatei:",
+        options=["Behalten", "Ins Archiv verschieben", "Löschen"],
+        index=0,
+        help="Nur erfolgreich konvertierte Originale sind betroffen. "
+        "Fehlgeschlagene Dateien bleiben immer unangetastet.",
+    )
+    on_success = {
+        "Behalten": "keep",
+        "Ins Archiv verschieben": "archive",
+        "Löschen": "delete",
+    }[on_success_label]
+    archive_dir = ""
+    if on_success == "archive":
+        archive_dir = st.text_input(
+            "Archiv-Ordner",
+            value=st.session_state.get("archive_dir", ""),
+            help="Struktur des Quellordners wird hier gespiegelt.",
+        )
+        st.session_state["archive_dir"] = archive_dir
+    elif on_success == "delete":
+        st.warning("⚠️ Originale werden nach Erfolg unwiderruflich gelöscht.")
     st.divider()
     st.caption(
         "Unterstuetzte Formate: "
@@ -115,6 +159,9 @@ if start:
     if not output_dir:
         st.error("Bitte einen Ziel-Vault-Ordner angeben.")
         st.stop()
+    if on_success == "archive" and not archive_dir:
+        st.error("Für 'Ins Archiv verschieben' bitte einen Archiv-Ordner angeben.")
+        st.stop()
 
     input_root = Path(input_dir).resolve()
     out_root = Path(output_dir).resolve()
@@ -126,7 +173,11 @@ if start:
         st.warning("Keine unterstuetzten Dateien gefunden.")
         st.stop()
 
-    config = dw.ConverterConfig(do_ocr=do_ocr)
+    config = dw.ConverterConfig(
+        do_ocr=do_ocr,
+        on_success=on_success,
+        archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
+    )
 
     st.subheader("Fortschritt")
     progress = st.progress(0.0)
@@ -138,6 +189,7 @@ if start:
     ph_current = st.empty()
 
     ok = 0
+    moved = 0
     failures: list = []
     start_time = time.perf_counter()
 
@@ -158,6 +210,8 @@ if start:
                 )
             if res.success:
                 ok += 1
+                if res.moved_to:
+                    moved += 1
             else:
                 failures.append(res)
 
@@ -177,16 +231,73 @@ if start:
         f"Fertig in {_format_duration(total_time)}: "
         f"{ok} erfolgreich, {len(failures)} fehlgeschlagen."
     )
+    if moved:
+        verb = "gelöscht" if on_success == "delete" else "ins Archiv verschoben"
+        st.info(f"{moved} Originaldatei(en) {verb}.")
 
     if failures:
         st.subheader("⚠️ Fehlerprotokoll")
-        st.dataframe(
-            [
-                {"Datei": r.source_path, "Fehler": r.error}
-                for r in failures
-            ],
-            use_container_width=True,
+
+        # Kurzueberblick: Anzahl je Fehlerkategorie.
+        cat_counts: dict[str, int] = {}
+        for r in failures:
+            cat = r.error_category or "fehler"
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        st.caption(
+            "Kategorien: "
+            + " · ".join(
+                f"{cat} ({n})"
+                for cat, n in sorted(cat_counts.items(), key=lambda kv: -kv[1])
+            )
         )
+
+        # Tabelle mit klickbarem Quellenlink (Datei + Ordner im Original).
+        rows = []
+        for r in failures:
+            p = Path(r.source_path)
+            rows.append(
+                {
+                    "Datei": p.name,
+                    "Kategorie": r.error_category or "fehler",
+                    "Hinweis": r.error_hint or "",
+                    "Fehler": r.error or "",
+                    "Datei öffnen": _file_uri(str(p)),
+                    "Ordner öffnen": _file_uri(str(p.parent)),
+                    "Pfad": str(p),
+                }
+            )
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Datei öffnen": st.column_config.LinkColumn(
+                    "Datei öffnen", display_text="📄 öffnen"
+                ),
+                "Ordner öffnen": st.column_config.LinkColumn(
+                    "Ordner öffnen", display_text="📂 Ordner"
+                ),
+            },
+        )
+        st.caption(
+            "Hinweis: Manche Browser blockieren `file://`-Links aus Sicherheits"
+            "gründen. Dann den Pfad aus der Spalte *Pfad* kopieren."
+        )
+
+        # Echte Ursache pro Datei: voller Traceback zum Aufklappen.
+        st.markdown("**Was ist wirklich passiert? (Details je Datei)**")
+        for r in failures:
+            p = Path(r.source_path)
+            with st.expander(f"{p.name} — {r.error or 'Fehler'}"):
+                st.write(f"**Kategorie:** {r.error_category or 'fehler'}")
+                if r.error_hint:
+                    st.write(f"**Hinweis:** {r.error_hint}")
+                st.write(f"**Original:** `{p}`")
+                uri = _file_uri(str(p))
+                if uri:
+                    st.markdown(f"[📄 Datei öffnen]({uri}) · [📂 Ordner öffnen]({_file_uri(str(p.parent))})")
+                st.code(r.error_detail or r.error or "", language="text")
+
         st.download_button(
             "⬇️ Fehlerprotokoll (CSV) herunterladen",
             data=_errors_to_csv(failures),
