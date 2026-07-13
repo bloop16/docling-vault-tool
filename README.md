@@ -31,6 +31,17 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `install_and_run.sh`  | Ein-Klick-Setup + Start für Linux/macOS |
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
 | `requirements.txt`  | Abhängigkeiten (Docling + Streamlit) |
+| `.streamlit/config.toml` | Basis-Theme (dunkel/technisch) für das Dashboard |
+
+## Dashboard
+
+Modernes, dunkles „Vault"-Frontend, das auf einen Blick zeigt, was das Tool
+besser kann: Hero mit Kurzbeschreibung, Feature-Karten (Struktur statt Textbrei,
+Bildextraktion, Obsidian-native Properties + Rückverweis, echte Parallelisierung,
+transparente Fehler) und eine **Quelle ▸ Docling ▸ Vault**-Pipeline. Fortschritt,
+ETA und Fehlerprotokoll erscheinen live während der Konvertierung. Das Basis-Theme
+kommt aus `.streamlit/config.toml`, der Feinschliff (Hero, Karten, Pipeline) per
+CSS direkt in `app_streamlit.py`.
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
