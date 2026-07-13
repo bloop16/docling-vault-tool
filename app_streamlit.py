@@ -317,6 +317,30 @@ with st.sidebar:
     )
 
     st.markdown(
+        '<div class="side-label">Excel-Arbeitsmappen</div>', unsafe_allow_html=True
+    )
+    xlsx_sheet_limit = st.number_input(
+        "Sheet-Limit je Arbeitsmappe",
+        min_value=0,
+        value=0,
+        step=5,
+        help="0 = alle Blätter konvertieren. Ein Limit begrenzt Laufzeit und "
+        "Notizgröße bei Arbeitsmappen mit sehr vielen Blättern.",
+    )
+    xlsx_on_limit = "limit"
+    if xlsx_sheet_limit > 0:
+        xlsx_on_limit_label = st.radio(
+            "Bei Überschreitung",
+            options=["Nur erste Blätter konvertieren", "Datei überspringen"],
+            index=0,
+            help="Übersprungene Dateien erscheinen im Fehlerprotokoll. Bei "
+            "„nur erste Blätter“ vermerkt das Frontmatter die Gesamtzahl.",
+        )
+        xlsx_on_limit = (
+            "limit" if xlsx_on_limit_label.startswith("Nur") else "skip"
+        )
+
+    st.markdown(
         '<div class="side-label">Nach erfolgreicher Konvertierung</div>',
         unsafe_allow_html=True,
     )
@@ -476,6 +500,8 @@ with tab_convert:
             generate_picture_images=extract_images,
             images_scale=images_scale,
             do_table_structure=table_structure,
+            xlsx_sheet_limit=int(xlsx_sheet_limit),
+            xlsx_on_limit=xlsx_on_limit,
             on_success=on_success,
             archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
             notes_subdir=notes_subdir,

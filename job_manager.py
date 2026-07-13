@@ -50,6 +50,7 @@ _CONFIG_FIELDS = (
     "do_ocr", "generate_picture_images", "images_scale", "do_table_structure",
     "on_success", "archive_dir", "notes_subdir", "mirror_structure",
     "attachments_mode", "attachments_subdir", "add_frontmatter",
+    "xlsx_sheet_limit", "xlsx_on_limit",
 )
 
 
@@ -659,6 +660,11 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
                        help="Skalierung der extrahierten Bilder (Default 2.0)")
     p_add.add_argument("--no-tables", action="store_true",
                        help="Tabellenstruktur-Erkennung deaktivieren")
+    p_add.add_argument("--xlsx-sheet-limit", type=int, default=None,
+                       help="Max. Blaetter je XLSX-Arbeitsmappe (0 = alle)")
+    p_add.add_argument("--xlsx-on-limit", choices=["limit", "skip"], default=None,
+                       help="Bei Ueberschreitung: limit = nur erste Blaetter, "
+                       "skip = Datei ueberspringen")
     p_add.add_argument("--on-success", choices=["keep", "archive", "delete"], default=None)
     p_add.add_argument("--archive-dir", default=None)
     p_add.add_argument("--notes-subdir", default=None)
@@ -699,6 +705,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             config.images_scale = args.images_scale
         if args.no_tables:
             config.do_table_structure = False
+        if args.xlsx_sheet_limit is not None:
+            config.xlsx_sheet_limit = args.xlsx_sheet_limit
+        if args.xlsx_on_limit is not None:
+            config.xlsx_on_limit = args.xlsx_on_limit
         if args.on_success:
             config.on_success = args.on_success
         if args.archive_dir:

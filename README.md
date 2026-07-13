@@ -155,6 +155,8 @@ Oder direkt über das Setup-Skript:
 | `--no-images`     | Keine eingebetteten Bilder extrahieren (reine Textkonvertierung) |
 | `--images-scale`  | Skalierung der extrahierten Bilder (Default 2.0) |
 | `--no-tables`     | Tabellenstruktur-Erkennung deaktivieren (schneller) |
+| `--xlsx-sheet-limit` | Max. Blätter je XLSX-Arbeitsmappe (0 = alle) |
+| `--xlsx-on-limit` | Bei Überschreitung: `limit` = nur erste Blätter, `skip` = Datei überspringen |
 | `--on-success`    | Was mit erfolgreich konvertierten Originalen passiert: `keep` (Default), `archive`, `delete` |
 | `--archive-dir`   | Zielordner für `--on-success archive` (spiegelt die Quellstruktur) |
 | `--notes-subdir`  | Unterordner im Ziel für die Notizen (überschreibt Empfehlung; `""` = Wurzel) |
@@ -238,6 +240,23 @@ Vorlagen liegen unter `deploy/`:
 
 Alternativ funktionieren auch `cron @reboot`, ein Docker-Container oder ein
 n8n-Exec-Node.
+
+## Excel-Arbeitsmappen mit vielen Blättern
+
+Arbeitsmappen mit sehr vielen Blättern können Laufzeit und Notizgröße sprengen.
+Über das **Sheet-Limit** (Seitenleiste bzw. `--xlsx-sheet-limit`) lässt sich die
+Anzahl begrenzen; die Blattnamen werden dafür ohne vollständiges Öffnen der
+Datei gezählt. Bei Überschreitung gibt es zwei Verhalten:
+
+- **Nur erste Blätter konvertieren** (Standard): Es wird eine getrimmte Kopie
+  verarbeitet, das Original bleibt unangetastet. Das Frontmatter vermerkt
+  `sheets_total` und `sheets_converted`, sodass gekürzte Notizen im Vault
+  auffindbar bleiben.
+- **Datei überspringen**: Die Arbeitsmappe landet mit der Kategorie
+  „zu viele sheets" im Fehlerprotokoll und kann gezielt einzeln konvertiert
+  werden.
+
+Ohne Limit (`0`, Standard) werden alle Blätter konvertiert.
 
 ## Fehleranalyse
 

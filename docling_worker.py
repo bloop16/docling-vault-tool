@@ -79,6 +79,16 @@ class ConverterConfig:
     attachments_subdir: str = "assets"
     add_frontmatter: bool = True
 
+    # --- XLSX-Sonderfall ---------------------------------------------------
+    # Arbeitsmappen mit sehr vielen Blaettern koennen Laufzeit und Notizgroesse
+    # sprengen. xlsx_sheet_limit begrenzt die Anzahl (0 = alle Blaetter);
+    # xlsx_on_limit bestimmt das Verhalten bei Ueberschreitung:
+    #   "limit" -> nur die ersten N Blaetter konvertieren (vermerkt im
+    #              Frontmatter als sheets_total/sheets_converted)
+    #   "skip"  -> Datei ueberspringen (landet im Fehlerprotokoll)
+    xlsx_sheet_limit: int = 0
+    xlsx_on_limit: str = "limit"
+
 
 @dataclass
 class ConversionResult:
@@ -467,6 +477,44 @@ def _classify_error(text: str) -> tuple[str, str]:
     return "fehler", "Unerwarteter Fehler – vollständige Ursache siehe Traceback."
 
 
+def xlsx_sheet_names(path: os.PathLike | str) -> list[str]:
+    """Liest die Blattnamen einer XLSX-Datei ohne Zusatzabhaengigkeiten.
+
+    XLSX ist ein ZIP-Archiv; die Blaetter stehen in ``xl/workbook.xml``.
+    Bei beschaedigten/untypischen Dateien wird eine leere Liste geliefert --
+    die eigentliche Fehlerbehandlung uebernimmt dann die Konvertierung.
+    """
+    import zipfile
+    from xml.etree import ElementTree
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            with zf.open("xl/workbook.xml") as fh:
+                root = ElementTree.parse(fh).getroot()
+    except Exception:  # noqa: BLE001 -- defekte Datei o. ae.
+        return []
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    return [el.get("name", "") for el in root.findall("m:sheets/m:sheet", ns)]
+
+
+def _trim_xlsx(source: Path, keep: int) -> Path:
+    """Erzeugt eine temporaere Kopie der Arbeitsmappe mit den ersten ``keep``
+    Blaettern. openpyxl ist eine Docling-Abhaengigkeit und daher zur Laufzeit
+    verfuegbar; der Import bleibt lazy, damit das Modul ohne sie importierbar
+    ist."""
+    import tempfile
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(source)
+    for name in workbook.sheetnames[keep:]:
+        del workbook[name]
+    fd, tmp = tempfile.mkstemp(suffix=".xlsx", prefix=f"{source.stem}_trimmed_")
+    os.close(fd)
+    workbook.save(tmp)
+    return Path(tmp)
+
+
 def _apply_post_action(
     source: Path,
     config: ConverterConfig,
@@ -532,13 +580,40 @@ def convert_single_file(
     else:
         assets_dir = out_root / (config.attachments_subdir or "assets") / _asset_key(rel)
 
+    # XLSX-Sonderfall: Arbeitsmappen mit zu vielen Blaettern begrenzen oder
+    # ueberspringen (Zaehlung ist billig, kein Docling noetig).
+    convert_input: Path = source
+    trimmed_tmp: Optional[Path] = None
+    sheets_total: Optional[int] = None
+    sheets_converted: Optional[int] = None
+    if source.suffix.lower() == ".xlsx" and config.xlsx_sheet_limit > 0:
+        names = xlsx_sheet_names(source)
+        if len(names) > config.xlsx_sheet_limit:
+            if config.xlsx_on_limit == "skip":
+                return ConversionResult(
+                    source_path=str(source),
+                    success=False,
+                    duration_s=time.perf_counter() - start,
+                    error=f"{len(names)} Blätter, Limit {config.xlsx_sheet_limit}",
+                    error_category="zu viele sheets",
+                    error_hint="Arbeitsmappe übersprungen. Limit erhöhen, den "
+                    "Modus „nur erste Blätter“ wählen oder die Datei gezielt "
+                    "einzeln konvertieren.",
+                )
+            sheets_total = len(names)
+            sheets_converted = config.xlsx_sheet_limit
+
     try:
         from docling_core.types.doc import ImageRefMode
 
         if converter is None:
             converter = build_converter(config)
 
-        result = converter.convert(source)
+        if sheets_total is not None:
+            trimmed_tmp = _trim_xlsx(source, config.xlsx_sheet_limit)
+            convert_input = trimmed_tmp
+
+        result = converter.convert(convert_input)
         doc = result.document
 
         md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -581,6 +656,8 @@ def convert_single_file(
                     "converted_at": datetime.now(timezone.utc)
                     .isoformat(timespec="seconds"),
                     "converter": "docling",
+                    "sheets_total": sheets_total,
+                    "sheets_converted": sheets_converted,
                 }
             ) + body
 
@@ -611,6 +688,9 @@ def convert_single_file(
             error_hint=hint,
             error_detail=detail.strip(),
         )
+    finally:
+        if trimmed_tmp is not None:
+            trimmed_tmp.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -688,6 +768,19 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         help="Tabellenstruktur-Erkennung deaktivieren (schneller)",
     )
     parser.add_argument(
+        "--xlsx-sheet-limit",
+        type=int,
+        default=0,
+        help="Max. Blaetter je XLSX-Arbeitsmappe (0 = alle)",
+    )
+    parser.add_argument(
+        "--xlsx-on-limit",
+        choices=["limit", "skip"],
+        default="limit",
+        help="Bei Ueberschreitung: limit = nur erste Blaetter, skip = Datei "
+        "ueberspringen",
+    )
+    parser.add_argument(
         "--on-success",
         choices=["keep", "archive", "delete"],
         default="keep",
@@ -742,6 +835,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     config.generate_picture_images = not args.no_images
     config.images_scale = args.images_scale
     config.do_table_structure = not args.no_tables
+    config.xlsx_sheet_limit = args.xlsx_sheet_limit
+    config.xlsx_on_limit = args.xlsx_on_limit
     config.on_success = args.on_success
     config.archive_dir = (
         str(Path(args.archive_dir).resolve()) if args.archive_dir else None
