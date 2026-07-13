@@ -88,6 +88,10 @@ def _lock_file(job_id: str) -> Path:
     return config_dir() / "manifests" / f"{job_id}.lock"
 
 
+def _history_file(job_id: str) -> Path:
+    return config_dir() / "manifests" / f"{job_id}.history.json"
+
+
 # ---------------------------------------------------------------------------
 # Datentypen
 # ---------------------------------------------------------------------------
@@ -233,7 +237,39 @@ def remove_job(job_ref: str) -> bool:
     save_jobs([j for j in jobs if j.id != job.id])
     _manifest_file(job.id).unlink(missing_ok=True)
     _lock_file(job.id).unlink(missing_ok=True)
+    _history_file(job.id).unlink(missing_ok=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Lauf-Historie (je Job)
+# ---------------------------------------------------------------------------
+
+# Maximal gespeicherte Laeufe pro Job (aelteste werden verworfen).
+HISTORY_LIMIT = 200
+
+
+def load_history(job_id: str) -> list[dict]:
+    """Laedt die Lauf-Historie eines Jobs (neueste zuletzt)."""
+    path = _history_file(job_id)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _append_history(job_id: str, record: dict) -> None:
+    history = load_history(job_id)
+    history.append(record)
+    if len(history) > HISTORY_LIMIT:
+        history = history[-HISTORY_LIMIT:]
+    path = _history_file(job_id)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +332,13 @@ def scan_changes(job: Job, manifest: Optional[dict] = None) -> ChangeSet:
     cs = ChangeSet()
     seen: set[str] = set()
 
-    for path in dw.discover_files(job.source):
+    # Ziel- und Archivordner ausblenden, sonst wuerden erzeugte .md-Dateien
+    # bzw. archivierte Originale selbst als Quelle erkannt.
+    cfg = job.converter_config()
+    source_files = dw.discover_files(
+        job.source, exclude_dirs=(job.target, cfg.archive_dir)
+    )
+    for path in source_files:
         key = str(path)
         seen.add(key)
         try:
@@ -319,8 +361,10 @@ def scan_changes(job: Job, manifest: Optional[dict] = None) -> ChangeSet:
             continue
         (cs.changed if changed else cs.unchanged).append(key)
 
-    for key in manifest:
-        if key not in seen:
+    for key, entry in manifest.items():
+        # Absichtlich verschobene/geloeschte Originale (on_success) sind kein
+        # "entfernt" im Sinne einer verschwundenen Quelldatei.
+        if key not in seen and not entry.get("moved_to"):
             cs.removed.append(key)
     return cs
 
@@ -341,7 +385,7 @@ def _acquire_lock(job_id: str, stale_after: float = 6 * 3600) -> Path:
         except OSError:
             age = 0
         if age < stale_after:
-            raise JobLockedError(f"Job '{job_id}' laeuft bereits (Lock: {lock}).")
+            raise JobLockedError(f"Job '{job_id}' läuft bereits (Lock: {lock}).")
         lock.unlink(missing_ok=True)  # veraltete Sperre entfernen
     fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     os.write(fd, f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}".encode())
@@ -389,12 +433,16 @@ def run_job(
     max_workers: Optional[int] = None,
     progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]] = None,
     convert_batch: Optional[Callable] = None,
+    trigger: str = "manuell",
 ) -> JobRunSummary:
     """Fuehrt einen Job inkrementell aus (oder zeigt bei ``dry_run`` nur den Plan).
 
     Konvertiert werden nur neue/geaenderte/zuvor fehlgeschlagene Dateien. Das
     Manifest wird atomar und in ``finally`` gespeichert, damit ein Abbruch den
-    Zustand nicht verliert.
+    Zustand nicht verliert. Laeufe mit tatsaechlicher Arbeit landen in der
+    Historie (``load_history``); ``trigger`` benennt den Ausloeser
+    (cli/dashboard/watch/...). Leerlaeufe werden nicht protokolliert, damit der
+    watch-Modus die Historie nicht flutet.
     """
     started = datetime.now(timezone.utc)
     t0 = time.perf_counter()
@@ -440,6 +488,8 @@ def run_job(
                 "num_images": res.num_images,
                 "converted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
+            if res.moved_to:
+                entry["moved_to"] = res.moved_to
             if res.success:
                 ok += 1
                 entry["attempts"] = 0
@@ -461,11 +511,24 @@ def run_job(
             lock.unlink(missing_ok=True)
     _touch_last_run(job)
 
-    return JobRunSummary(
+    summary = JobRunSummary(
         job_id=job.id, started_at=started.isoformat(timespec="seconds"),
         duration_s=time.perf_counter() - t0, changes=changes.counts(),
         converted_ok=ok, converted_failed=failed, failures=failures,
     )
+    _append_history(job.id, {
+        "started_at": summary.started_at,
+        "trigger": trigger,
+        "duration_s": round(summary.duration_s, 2),
+        "changes": summary.changes,
+        "converted_ok": ok,
+        "converted_failed": failed,
+        "failures": [
+            {"file": f.source_path, "error": f.error, "category": f.error_category}
+            for f in failures[:25]
+        ],
+    })
+    return summary
 
 
 def _touch_last_run(job: Job) -> None:
@@ -493,7 +556,7 @@ def watch_job(
         if stop and stop():
             return
         try:
-            summary = run_job(job)
+            summary = run_job(job, trigger="watch")
         except JobLockedError:
             summary = None
         if summary and on_cycle:
@@ -516,7 +579,7 @@ def watch_job(
 
 def _print_summary(job: Job, s: JobRunSummary) -> None:
     print(f"Job '{job.name}' ({job.id}):")
-    print("  Aenderungen: " + ", ".join(f"{k}={v}" for k, v in s.changes.items()))
+    print("  Änderungen: " + ", ".join(f"{k}={v}" for k, v in s.changes.items()))
     if not s.dry_run:
         print(f"  Konvertiert: ok={s.converted_ok} fehler={s.converted_failed} "
               f"in {s.duration_s:.1f}s")
@@ -548,6 +611,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
                            ("rm", "Job loeschen")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("job", help="Job-ID oder Name")
+    p_hist = sub.add_parser("history", help="Lauf-Verlauf eines Jobs zeigen")
+    p_hist.add_argument("job", help="Job-ID oder Name")
+    p_hist.add_argument("-n", "--limit", type=int, default=20,
+                        help="Anzahl der letzten Laeufe (Default 20)")
     p_watch = sub.add_parser("watch", help="Ordner ueberwachen (Polling)")
     p_watch.add_argument("job")
     p_watch.add_argument("-n", "--poll-interval", type=int, default=None,
@@ -592,7 +659,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             print(f"    konvertiert: {done}  letzter Lauf: {j.last_run_at or '-'}")
         return 0
 
-    if args.cmd in ("plan", "run", "show", "rm", "watch"):
+    if args.cmd in ("plan", "run", "show", "rm", "watch", "history"):
         job = get_job(args.job)
         if not job:
             print(f"Job nicht gefunden: {args.job}", file=sys.stderr)
@@ -602,7 +669,23 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             return 0
         if args.cmd == "rm":
             remove_job(job.id)
-            print(f"Job geloescht: {job.id}")
+            print(f"Job gelöscht: {job.id}")
+            return 0
+        if args.cmd == "history":
+            history = load_history(job.id)
+            if not history:
+                print("Noch keine Läufe protokolliert.")
+                return 0
+            for rec in history[-args.limit:][::-1]:
+                ch = rec.get("changes", {})
+                print(f"  {rec.get('started_at', '-'):25s} "
+                      f"{rec.get('trigger', '-'):10s} "
+                      f"neu={ch.get('neu', 0)} geändert={ch.get('geaendert', 0)}  "
+                      f"ok={rec.get('converted_ok', 0)} "
+                      f"fehler={rec.get('converted_failed', 0)}  "
+                      f"{rec.get('duration_s', 0):.1f}s")
+                for f in rec.get("failures", []):
+                    print(f"      FEHLER {f.get('file')}: {f.get('error')}")
             return 0
         if args.cmd == "plan":
             _print_summary(job, run_job(job, dry_run=True))
@@ -612,7 +695,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
                 mark = "ok" if res.success else "FEHLER"
                 print(f"  [{done}/{total}] {mark}  {Path(res.source_path).name}", flush=True)
             try:
-                s = run_job(job, progress=_prog)
+                s = run_job(job, progress=_prog, trigger="cli")
             except JobLockedError as exc:
                 print(str(exc), file=sys.stderr)
                 return 3
@@ -621,7 +704,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         if args.cmd == "watch":
             if args.poll_interval:
                 job.poll_interval = args.poll_interval
-            print(f"Ueberwache {job.source} (Intervall {job.poll_interval}s). "
+            print(f"Überwache {job.source} (Intervall {job.poll_interval}s). "
                   f"Ctrl+C zum Beenden.")
 
             def _cycle(s: JobRunSummary):

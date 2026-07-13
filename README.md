@@ -31,18 +31,25 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `install_and_run.sh`  | Ein-Klick-Setup + Start für Linux/macOS |
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
 | `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
+| `tests/`            | Testsuite (läuft ohne installiertes Docling) |
 | `requirements.txt`  | Abhängigkeiten (Docling + Streamlit) |
-| `.streamlit/config.toml` | Basis-Theme (dunkel/technisch) für das Dashboard |
+| `requirements-dev.txt` | Entwicklungsabhängigkeiten (pytest) |
+| `.streamlit/config.toml` | Theme für das Dashboard |
 
 ## Dashboard
 
-Modernes, dunkles „Vault"-Frontend, das auf einen Blick zeigt, was das Tool
-besser kann: Hero mit Kurzbeschreibung, Feature-Karten (Struktur statt Textbrei,
-Bildextraktion, Obsidian-native Properties + Rückverweis, echte Parallelisierung,
-transparente Fehler) und eine **Quelle ▸ Docling ▸ Vault**-Pipeline. Fortschritt,
-ETA und Fehlerprotokoll erscheinen live während der Konvertierung. Das Basis-Theme
-kommt aus `.streamlit/config.toml`, der Feinschliff (Hero, Karten, Pipeline) per
-CSS direkt in `app_streamlit.py`.
+Zwei Bereiche:
+
+- **Konvertierung** – Dateien scannen, Zielordner analysieren, Integrationsplan
+  prüfen und einmal für den gesamten Batch bestätigen. Während der Konvertierung
+  laufen Fortschritt, Restzeit und Zähler live mit; danach bleibt das Ergebnis
+  inklusive Fehlerprotokoll stehen.
+- **Jobs & Überwachung** – Jobs anlegen, per Dry-Run prüfen, inkrementell
+  ausführen und den Lauf-Verlauf einsehen; der Befehl für die dauerhafte
+  Ordnerüberwachung wird pro Job angezeigt.
+
+Das Theme kommt aus `.streamlit/config.toml`, die Feinabstimmung per CSS in
+`app_streamlit.py`.
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
@@ -89,9 +96,13 @@ Integrationsplan abgeleitet, der **einmal für den gesamten Batch** bestätigt w
 - **Bestehender Nicht-Vault-Ordner** → erkannter Anhang-Ordner wird
   wiederverwendet, sonst `assets/`.
 
-Im Dashboard: **„🔎 Ziel analysieren & Plan erstellen"** → Plan prüfen/anpassen →
-**„🚀 Plan bestätigen & konvertieren"**. In der CLI wird der Plan ausgegeben und
-einmal abgefragt (mit `--yes` überspringbar).
+Im Dashboard: **„Ziel analysieren"** → Plan prüfen/anpassen → **„Plan bestätigen
+und Konvertierung starten"**. In der CLI wird der Plan ausgegeben und einmal
+abgefragt (mit `--yes` überspringbar).
+
+Liegt der Zielordner innerhalb des Quellordners, wird er beim Scan automatisch
+ausgenommen – bereits erzeugte Markdown-Dateien werden also nie erneut als
+Quelle verarbeitet. Dasselbe gilt für den Archiv-Ordner.
 
 ## Nutzung ohne Dashboard (CLI)
 
@@ -148,19 +159,27 @@ Warum „sicher":
 Konfiguration/Status liegen nutzerspezifisch unter `DOCLING_VAULT_HOME` bzw. dem
 OS-Standard (`~/.config/docling-vault-tool`, `%APPDATA%`, `~/Library/…`).
 
-**Im Dashboard:** Abschnitt *Automatisierung: Jobs & Ordnerüberwachung* – Job aus
-den aktuellen Einstellungen anlegen, „🔍 Prüfen" (Dry-Run), „▶️ Ausführen"
-(inkrementell), löschen; der Watch-Befehl wird pro Job angezeigt.
+**Im Dashboard:** Tab *Jobs & Überwachung* – Job aus den aktuellen Einstellungen
+anlegen, „Prüfen" (Dry-Run), „Ausführen" (inkrementell), löschen; der
+Watch-Befehl wird pro Job angezeigt.
+
+**Lauf-Historie:** Jeder Lauf mit tatsächlicher Arbeit wird protokolliert
+(Zeitpunkt, Auslöser wie `cli`/`dashboard`/`watch`, Anzahl neu/geändert,
+Erfolge, Fehler samt Datei und Grund, Dauer). Einsehbar im Dashboard je Job
+unter *Verlauf* oder per CLI (`history`). Leerläufe der Ordnerüberwachung
+werden nicht protokolliert, damit der Verlauf aussagekräftig bleibt; gespeichert
+werden die letzten 200 Läufe pro Job.
 
 **CLI:**
 
 ```bash
-python job_manager.py add   --name "Berichte" --source SRC --target VAULT
+python job_manager.py add     --name "Berichte" --source SRC --target VAULT
 python job_manager.py list
-python job_manager.py plan  Berichte      # Dry-Run: was würde passieren?
-python job_manager.py run   Berichte      # inkrementell konvertieren
-python job_manager.py watch Berichte -n 30  # Ordner überwachen (alle 30 s)
-python job_manager.py rm    Berichte
+python job_manager.py plan    Berichte        # Dry-Run: was würde passieren?
+python job_manager.py run     Berichte        # inkrementell konvertieren
+python job_manager.py history Berichte -n 20  # letzte Läufe anzeigen
+python job_manager.py watch   Berichte -n 30  # Ordner überwachen (alle 30 s)
+python job_manager.py rm      Berichte
 ```
 
 Für dauerhaften Betrieb `watch` als Dienst starten (z. B. systemd-Service,
@@ -223,3 +242,14 @@ converter: "docling"
 - **Robustheit:** passwortgeschützte oder korrupte Dateien brechen den Batch nicht ab —
   sie landen im Fehlerprotokoll (CSV-Download im Dashboard bzw. `--error-log`).
 - **OCR** nur gezielt für gescannte PDFs aktivieren, sonst vervielfacht sich die Laufzeit.
+
+## Entwicklung & Tests
+
+Die Testsuite deckt Discovery, Ablage-Varianten, Fehlerklassifizierung,
+Vault-Analyse und die Job-Logik (Inkrement, Retry-Begrenzung, Sperre, Historie)
+ab und läuft ohne installiertes Docling:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```

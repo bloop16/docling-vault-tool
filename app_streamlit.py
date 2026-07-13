@@ -1,9 +1,10 @@
 """Streamlit-Dashboard fuer die Docling-Batch-Konvertierung.
 
-Modernes, technisches "Vault"-Frontend: visuelle Kontrolle statt CLI-only,
-mit Fortschritt, ETA, Erfolg-/Fehler-Zaehler, Quellenlinks und einem
-herunterladbaren Fehlerprotokoll. Die eigentliche Konvertierungslogik liegt in
-``docling_worker.py`` und wird hier nur orchestriert.
+Zwei Bereiche: *Konvertierung* (Scan, Zielanalyse, Integrationsplan mit
+einmaliger Bestaetigung, Fortschritt, Fehlerprotokoll) und *Jobs &
+Ueberwachung* (inkrementelle Jobs mit Lauf-Historie). Die Konvertierungs-
+und Job-Logik liegt in ``docling_worker.py`` bzw. ``job_manager.py`` und wird
+hier nur orchestriert.
 
 Start::
 
@@ -12,8 +13,8 @@ Start::
 
 from __future__ import annotations
 
-import io
 import csv
+import io
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -26,238 +27,103 @@ import job_manager as jm
 
 st.set_page_config(
     page_title="Docling Vault Tool",
-    page_icon="🗄️",
+    page_icon="🗂",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Optik / Theme
+# Erscheinungsbild: dunkel, nuechtern, eine Akzentfarbe, keine Effekte.
 # ---------------------------------------------------------------------------
-# Das Design soll auf den ersten Blick zeigen, was das Tool besser kann:
-# Struktur statt Textbrei, Bildextraktion, Obsidian-native Properties inkl.
-# Rueckverweis zum Original, echte Parallelisierung und transparente Fehler.
-
-ACCENT_1 = "#22d3ee"  # Teal  -> "Struktur"
-ACCENT_2 = "#7c8cff"  # Violet -> "Wissen/Vault"
-
 _CSS = """
 <style>
 :root {
-  --v-bg: #0b0f17;
-  --v-panel: #121a28;
-  --v-panel-2: #0f1622;
-  --v-border: rgba(148, 163, 184, 0.16);
-  --v-border-strong: rgba(148, 163, 184, 0.28);
-  --v-text: #e6edf3;
-  --v-muted: #8b98a9;
-  --v-accent-1: #22d3ee;
-  --v-accent-2: #7c8cff;
-  --v-grad: linear-gradient(135deg, #22d3ee 0%, #7c8cff 100%);
+  --bg: #12151c;
+  --panel: #181c25;
+  --panel-2: #141821;
+  --border: #262c38;
+  --text: #d8dee8;
+  --muted: #8b93a3;
+  --accent: #4c8bf5;
 }
 
-/* Hintergrund mit dezentem Glow (Wissensgraph-Anmutung) */
-.stApp {
-  background:
-    radial-gradient(900px 420px at 12% -8%, rgba(34, 211, 238, 0.10), transparent 60%),
-    radial-gradient(900px 520px at 100% 0%, rgba(124, 140, 255, 0.12), transparent 55%),
-    var(--v-bg);
-}
+.stApp { background: var(--bg); }
 header[data-testid="stHeader"] { background: transparent; }
-.block-container { padding-top: 2.2rem; max-width: 1180px; }
+.block-container { padding-top: 2.4rem; max-width: 1150px; }
 
-/* ---------------- Hero ---------------- */
-.vault-hero {
-  position: relative;
-  border: 1px solid var(--v-border);
-  border-radius: 18px;
-  padding: 28px 30px;
-  background:
-    linear-gradient(180deg, rgba(124,140,255,0.08), rgba(18,26,40,0.4)),
-    var(--v-panel);
-  overflow: hidden;
+/* Kopfzeile */
+.app-header { border-bottom: 1px solid var(--border); padding-bottom: 18px; }
+.app-kicker {
+  font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
 }
-.vault-hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(148,163,184,0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148,163,184,0.05) 1px, transparent 1px);
-  background-size: 26px 26px;
-  mask-image: radial-gradient(600px 200px at 80% 0%, black, transparent 75%);
-  pointer-events: none;
+.app-header h1 {
+  font-size: 1.55rem; font-weight: 650; letter-spacing: -.01em;
+  margin: .35rem 0 .3rem; color: var(--text);
 }
-.vault-badge {
-  display: inline-flex; align-items: center; gap: 8px;
-  font: 600 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
-  letter-spacing: 0.14em; text-transform: uppercase;
-  color: #cbd5e1;
-  padding: 6px 11px; border-radius: 999px;
-  border: 1px solid var(--v-border-strong);
-  background: rgba(15, 22, 34, 0.6);
-}
-.vault-badge .dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--v-grad); box-shadow: 0 0 10px 1px rgba(34,211,238,0.7);
-}
-.vault-hero h1 {
-  margin: 16px 0 6px; font-size: 2.35rem; font-weight: 800; letter-spacing: -0.02em;
-  background: linear-gradient(90deg, #e6edf3 0%, #b8c4ff 60%, #7de8ff 100%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-.vault-hero p { margin: 0; color: var(--v-muted); font-size: 1.02rem; max-width: 720px; }
-.vault-hero .kicker { color: #d5def0; }
+.app-header p { margin: 0; color: var(--muted); font-size: .95rem; max-width: 78ch; }
 
-/* ---------------- Feature-Karten ---------------- */
-.feature-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px; margin: 16px 0 6px;
+/* Abschnitts-Label */
+.overline {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); font-weight: 650; margin: 1.5rem 0 .5rem;
 }
-.feature-card {
-  border: 1px solid var(--v-border);
-  border-radius: 14px; padding: 15px 16px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent), var(--v-panel-2);
-  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
-}
-.feature-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--v-border-strong);
-  box-shadow: 0 10px 30px -12px rgba(34,211,238,0.25);
-}
-.feature-card .ic { font-size: 1.35rem; }
-.feature-card .ttl { margin-top: 8px; font-weight: 700; font-size: 0.98rem; color: var(--v-text); }
-.feature-card .sub { margin-top: 4px; font-size: 0.82rem; color: var(--v-muted); line-height: 1.35; }
 
-/* ---------------- Pipeline-Visual ---------------- */
-.pipeline {
-  display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap;
-  margin: 10px 0 4px;
-}
-.pnode {
-  flex: 1 1 200px; min-width: 190px;
-  border: 1px solid var(--v-border); border-radius: 14px; padding: 14px 16px;
-  background: var(--v-panel);
-}
-.pnode.mid { border-color: rgba(124,140,255,0.45); box-shadow: inset 0 0 0 1px rgba(124,140,255,0.12); }
-.pnode .lbl { font: 600 10px/1 ui-monospace, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--v-muted); }
-.pnode .main { margin-top: 8px; font-weight: 700; color: var(--v-text); font-size: 1.02rem; }
-.pnode .meta { margin-top: 3px; font-size: 0.8rem; color: var(--v-muted); font-family: ui-monospace, monospace; }
-.parrow { display: flex; align-items: center; color: var(--v-accent-1); font-size: 1.3rem; font-weight: 700; }
-
-/* ---------------- Streamlit-Widgets aufhuebschen ---------------- */
+/* Sidebar */
 section[data-testid="stSidebar"] {
-  border-right: 1px solid var(--v-border);
-  background: linear-gradient(180deg, #0f1724, #0c121d);
+  background: var(--panel-2); border-right: 1px solid var(--border);
 }
+.side-label {
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); font-weight: 650; margin: 1.2rem 0 .1rem;
+}
+
+/* Kennzahlen */
 div[data-testid="stMetric"] {
-  border: 1px solid var(--v-border); border-radius: 14px;
-  padding: 14px 16px; background: var(--v-panel);
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px;
 }
-div[data-testid="stMetric"] label p { color: var(--v-muted) !important; font-size: 0.78rem !important; letter-spacing: .04em; }
-div[data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; }
+div[data-testid="stMetric"] label p { color: var(--muted) !important; font-size: .75rem !important; }
+div[data-testid="stMetricValue"] { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
 
-.stButton > button {
-  border-radius: 11px; font-weight: 650; border: 1px solid var(--v-border-strong);
-  transition: transform .1s ease, box-shadow .15s ease;
+/* Buttons */
+.stButton > button, .stDownloadButton > button {
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); font-weight: 500;
+  box-shadow: none;
 }
-.stButton > button:hover { transform: translateY(-1px); }
+.stButton > button:hover, .stDownloadButton > button:hover {
+  border-color: #39415250; color: #ffffff; background: #1d2230;
+}
 .stButton > button[kind="primary"] {
-  background: var(--v-grad); border: none; color: #0a0f1a;
-  box-shadow: 0 8px 24px -10px rgba(124,140,255,0.7);
+  background: var(--accent); border-color: var(--accent); color: #ffffff;
 }
-div[data-testid="stExpander"] {
-  border: 1px solid var(--v-border); border-radius: 12px; background: var(--v-panel-2);
+.stButton > button[kind="primary"]:hover {
+  background: #3d7ce6; border-color: #3d7ce6;
 }
-.stProgress > div > div > div > div { background: var(--v-grad) !important; }
 
-/* Ergebnis-Banner */
-.result-card {
-  border: 1px solid var(--v-border); border-radius: 16px; padding: 18px 20px;
-  background: linear-gradient(180deg, rgba(34,211,238,0.06), transparent), var(--v-panel);
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] { gap: 2px; border-bottom: 1px solid var(--border); }
+.stTabs [data-baseweb="tab"] { padding: 6px 14px; color: var(--muted); font-weight: 500; }
+.stTabs [aria-selected="true"] { color: var(--text); }
+.stTabs [data-baseweb="tab-highlight"] { background-color: var(--accent); }
+
+/* Fortschritt, Expander */
+.stProgress > div > div > div > div { background: var(--accent) !important; }
+div[data-testid="stExpander"] {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
 }
-.result-card .big { font-size: 1.6rem; font-weight: 800; }
-.section-title {
-  display: flex; align-items: center; gap: 10px;
-  font-weight: 750; font-size: 1.12rem; margin: 22px 0 8px; color: var(--v-text);
-}
-.section-title .bar { width: 4px; height: 18px; border-radius: 3px; background: var(--v-grad); }
 </style>
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
-# Wiederverwendbare Render-Helfer
+# Render-Helfer
 # ---------------------------------------------------------------------------
 
-def _hero() -> None:
-    st.markdown(
-        """
-        <div class="vault-hero">
-          <span class="vault-badge"><span class="dot"></span>Docling · Obsidian Vault · RAG-ready</span>
-          <h1>Docling Vault Tool</h1>
-          <p><span class="kicker">Aus Dokumenten wird ein Wissens-Vault — nicht Textbrei.</span>
-          Batch-Konvertierung von PDF/DOCX/XLSX/PPTX nach strukturiertem Markdown,
-          mit extrahierten Bildern, Obsidian-Properties und Rückverweis zum Original.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _features() -> None:
-    cards = [
-        ("🧭", "Struktur statt Textbrei", "Überschriften & Tabellen bleiben erhalten — die Basis für gutes Chunking."),
-        ("🖼️", "Bilder extrahiert", "Eingebettete Grafiken landen als eigene Dateien in <code>assets/</code>."),
-        ("🔗", "Obsidian-native", "YAML-Properties + Rückverweis (<code>original_path</code>) zum Quelldokument."),
-        ("⚡", "Echt parallel", "ProcessPool nutzt alle Kerne — ein Docling-Modell pro Prozess."),
-        ("🩺", "Transparente Fehler", "Echte Ursache je Datei + klickbarer Link in den Ursprungsordner."),
-    ]
-    html = '<div class="feature-grid">'
-    for ic, ttl, sub in cards:
-        html += (
-            f'<div class="feature-card"><div class="ic">{ic}</div>'
-            f'<div class="ttl">{ttl}</div><div class="sub">{sub}</div></div>'
-        )
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def _pipeline(src_count: int | None = None) -> None:
-    src_meta = f"{src_count} Datei(en)" if src_count is not None else "PDF · DOCX · XLSX · PPTX"
-    st.markdown(
-        f"""
-        <div class="pipeline">
-          <div class="pnode">
-            <div class="lbl">Quelle</div>
-            <div class="main">📚 Dokumente</div>
-            <div class="meta">{src_meta}</div>
-          </div>
-          <div class="parrow">▸</div>
-          <div class="pnode mid">
-            <div class="lbl">Verarbeitung</div>
-            <div class="main">⚙️ Docling</div>
-            <div class="meta">Layout · Tabellen · Bilder</div>
-          </div>
-          <div class="parrow">▸</div>
-          <div class="pnode">
-            <div class="lbl">Ziel</div>
-            <div class="main">🗄️ Vault</div>
-            <div class="meta">.md + assets + Properties</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _section(title: str) -> None:
-    st.markdown(
-        f'<div class="section-title"><span class="bar"></span>{title}</div>',
-        unsafe_allow_html=True,
-    )
+def _overline(text: str) -> None:
+    st.markdown(f'<div class="overline">{text}</div>', unsafe_allow_html=True)
 
 
 def _format_duration(seconds: float) -> str:
@@ -293,61 +159,150 @@ def _errors_to_csv(results: list) -> bytes:
 
 
 def _file_uri(path: str) -> str:
-    """file://-URI zum direkten Oeffnen/Anspringen im Ursprungsordner."""
+    """file://-URI zum direkten Oeffnen im Ursprungsordner."""
     try:
         return Path(path).resolve().as_uri()
-    except Exception:  # noqa: BLE001 -- z. B. relativer/ungueltiger Pfad
+    except Exception:  # noqa: BLE001 -- z. B. ungueltiger Pfad
         return ""
+
+
+def _render_failures(failures: list) -> None:
+    """Fehlerprotokoll: Kategorien, Tabelle mit Quellenlinks, Details, CSV."""
+    _overline("Fehlerprotokoll")
+
+    cat_counts: dict[str, int] = {}
+    for r in failures:
+        cat = r.error_category or "fehler"
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+    st.caption(
+        "Kategorien: "
+        + " · ".join(
+            f"{cat} ({n})"
+            for cat, n in sorted(cat_counts.items(), key=lambda kv: -kv[1])
+        )
+    )
+
+    rows = []
+    for r in failures:
+        p = Path(r.source_path)
+        rows.append(
+            {
+                "Datei": p.name,
+                "Kategorie": r.error_category or "fehler",
+                "Hinweis": r.error_hint or "",
+                "Fehler": r.error or "",
+                "Datei öffnen": _file_uri(str(p)),
+                "Ordner öffnen": _file_uri(str(p.parent)),
+                "Pfad": str(p),
+            }
+        )
+    st.dataframe(
+        rows,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Datei öffnen": st.column_config.LinkColumn(
+                "Datei öffnen", display_text="Datei öffnen"
+            ),
+            "Ordner öffnen": st.column_config.LinkColumn(
+                "Ordner öffnen", display_text="Ordner öffnen"
+            ),
+        },
+    )
+    st.caption(
+        "Hinweis: Manche Browser blockieren file://-Links. In dem Fall den "
+        "Pfad aus der Spalte „Pfad“ kopieren."
+    )
+
+    st.markdown("**Details je Datei**")
+    for r in failures:
+        p = Path(r.source_path)
+        with st.expander(f"{p.name} – {r.error or 'Fehler'}"):
+            st.write(f"**Kategorie:** {r.error_category or 'fehler'}")
+            if r.error_hint:
+                st.write(f"**Hinweis:** {r.error_hint}")
+            st.write(f"**Original:** `{p}`")
+            uri = _file_uri(str(p))
+            if uri:
+                st.markdown(
+                    f"[Datei öffnen]({uri}) · "
+                    f"[Ordner öffnen]({_file_uri(str(p.parent))})"
+                )
+            st.code(r.error_detail or r.error or "", language="text")
+
+    st.download_button(
+        "Fehlerprotokoll als CSV herunterladen",
+        data=_errors_to_csv(failures),
+        file_name="docling_fehler.csv",
+        mime="text/csv",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Kopfbereich
 # ---------------------------------------------------------------------------
-_hero()
-_features()
+st.markdown(
+    """
+    <div class="app-header">
+      <div class="app-kicker">Batch-Konvertierung für Wissens-Vaults</div>
+      <h1>Docling Vault Tool</h1>
+      <p>Konvertiert PDF-, Word-, Excel- und PowerPoint-Dokumente in strukturiertes
+      Markdown für Obsidian-kompatible Vaults. Überschriften und Tabellen bleiben
+      erhalten, eingebettete Bilder werden extrahiert, jede Notiz erhält Metadaten
+      mit Rückverweis auf das Original.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
-# Sidebar-Konfiguration
+# Sidebar: Einstellungen
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ⚙️ Konfiguration")
+    st.markdown('<div class="side-label">Verzeichnisse</div>', unsafe_allow_html=True)
     input_dir = st.text_input(
         "Quellordner",
         value=st.session_state.get("input_dir", ""),
         placeholder="/pfad/zu/den/dokumenten",
-        help="Ordner mit den PDF/DOCX/XLSX-Dateien (wird rekursiv durchsucht).",
+        help="Wird rekursiv nach unterstützten Dateien durchsucht.",
     )
     output_dir = st.text_input(
         "Ziel-Vault-Ordner",
         value=st.session_state.get("output_dir", ""),
-        placeholder="/pfad/zum/obsidian/vault",
-        help="Zielordner fuer die Markdown-Dateien (Obsidian-Vault).",
+        placeholder="/pfad/zum/vault",
+        help="Zielordner für die Markdown-Dateien. Bestehende Vaults werden "
+        "analysiert und die Dateien entsprechend eingegliedert.",
     )
+
+    st.markdown('<div class="side-label">Verarbeitung</div>', unsafe_allow_html=True)
     cpu_count = os.cpu_count() or 2
     max_workers = st.slider(
         "Parallele Prozesse",
         min_value=1,
         max_value=cpu_count,
         value=max(1, cpu_count - 1),
-        help="Docling ist CPU- und speicherlastig. Bei knappem RAM reduzieren.",
+        help="Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren.",
     )
     do_ocr = st.toggle(
-        "OCR aktivieren",
+        "OCR für gescannte PDFs",
         value=False,
-        help="Nur fuer gescannte PDFs ohne Textlayer. Deutlich langsamer.",
+        help="Nur für Scans ohne Textebene aktivieren – deutlich langsamer.",
     )
 
-    st.markdown("### 🧹 Nach erfolgreicher Konvertierung")
+    st.markdown(
+        '<div class="side-label">Nach erfolgreicher Konvertierung</div>',
+        unsafe_allow_html=True,
+    )
     on_success_label = st.radio(
-        "Mit Originaldatei:",
-        options=["Behalten", "Ins Archiv verschieben", "Löschen"],
+        "Originaldateien",
+        options=["Behalten", "In Archiv verschieben", "Löschen"],
         index=0,
-        help="Nur erfolgreich konvertierte Originale sind betroffen. "
-        "Fehlgeschlagene Dateien bleiben immer unangetastet.",
+        help="Betrifft nur erfolgreich konvertierte Dateien. Fehlgeschlagene "
+        "Dateien bleiben immer unangetastet.",
     )
     on_success = {
         "Behalten": "keep",
-        "Ins Archiv verschieben": "archive",
+        "In Archiv verschieben": "archive",
         "Löschen": "delete",
     }[on_success_label]
     archive_dir = ""
@@ -356,11 +311,11 @@ with st.sidebar:
             "Archiv-Ordner",
             value=st.session_state.get("archive_dir", ""),
             placeholder="/pfad/zum/archiv",
-            help="Struktur des Quellordners wird hier gespiegelt.",
+            help="Die Struktur des Quellordners wird im Archiv gespiegelt.",
         )
         st.session_state["archive_dir"] = archive_dir
     elif on_success == "delete":
-        st.warning("⚠️ Originale werden nach Erfolg unwiderruflich gelöscht.")
+        st.warning("Originale werden nach Erfolg unwiderruflich gelöscht.")
 
     st.divider()
     st.caption(
@@ -368,391 +323,398 @@ with st.sidebar:
         + ", ".join(sorted(e.lstrip(".") for e in dw.SUPPORTED_EXTENSIONS))
     )
 
-# Eingaben fuer den naechsten Rerun merken.
 st.session_state["input_dir"] = input_dir
 st.session_state["output_dir"] = output_dir
 
-# ---------------------------------------------------------------------------
-# Pipeline-Visual + Aktionen
-# ---------------------------------------------------------------------------
-scanned = st.session_state.get("scanned_files")
-_pipeline(len(scanned) if scanned else None)
-
-col_scan, col_analyze = st.columns([1, 1])
-scan = col_scan.button("🔍 Dateien scannen", use_container_width=True)
-analyze = col_analyze.button(
-    "🔎 Ziel analysieren & Plan erstellen", type="primary", use_container_width=True
-)
-
-if scan:
-    if not input_dir or not Path(input_dir).is_dir():
-        st.error("Bitte einen gültigen Quellordner angeben.")
-    else:
-        files = dw.discover_files(input_dir)
-        st.session_state["scanned_files"] = [str(f) for f in files]
-        st.success(f"{len(files)} unterstützte Datei(en) gefunden.")
-
-if st.session_state.get("scanned_files"):
-    st.caption(f"📦 Zuletzt gescannt: {len(st.session_state['scanned_files'])} Datei(en).")
-
-# ---------------------------------------------------------------------------
-# Schritt 1: Zielordner analysieren -> Profil + Empfehlung merken
-# ---------------------------------------------------------------------------
-if analyze:
-    if not output_dir:
-        st.error("Bitte einen Ziel-Vault-Ordner angeben.")
-    else:
-        profile = dw.analyze_vault(output_dir)
-        st.session_state["vault_profile"] = profile
-        st.session_state["vault_profile_target"] = output_dir
-        st.session_state["plan_reco"] = dw.recommend_config(profile)
-
-# Analyse gilt nur, solange der Zielordner unveraendert ist.
-profile = st.session_state.get("vault_profile")
-profile_valid = profile is not None and st.session_state.get(
-    "vault_profile_target"
-) == output_dir
-
-# ---------------------------------------------------------------------------
-# Schritt 2: Integrationsplan anzeigen, anpassen und EINMAL bestaetigen
-# ---------------------------------------------------------------------------
-confirm = False
+# Fuer den Jobs-Tab: Plan aus dem Konvertierungs-Tab.
+profile = None
 config: dw.ConverterConfig | None = None
-if profile_valid:
-    reco = st.session_state["plan_reco"]
 
-    _section("🧭 Zielordner-Analyse")
-    type_label = {
-        "obsidian": "🗄️ Obsidian-Vault",
-        "logseq": "🗄️ Logseq-Graph",
-        "folder": "📁 Bestehender Ordner (kein Vault)",
-        "new": "✨ Neuer Ordner (wird angelegt)",
-    }.get(profile.vault_type, profile.vault_type)
-    a1, a2, a3 = st.columns(3)
-    a1.metric("Zieltyp", type_label.split(" ", 1)[-1])
-    a2.metric("Vorhandene Notizen", profile.note_count)
-    a3.metric("Top-Ordner", len(profile.top_level_folders))
-    for obs in profile.observations:
-        st.caption(f"• {obs}")
-    if profile.top_level_folders:
-        st.caption(
-            "Bestehende Ordner: "
-            + ", ".join(profile.top_level_folders[:12])
-            + (" …" if len(profile.top_level_folders) > 12 else "")
-        )
+tab_convert, tab_jobs = st.tabs(["Konvertierung", "Jobs & Überwachung"])
 
-    _section("🗺️ Integrationsplan")
-    if profile.vault_type in ("obsidian", "logseq") and not profile.is_empty:
-        st.info(
-            "Bestehender Vault erkannt — die Dateien werden **entsprechend der "
-            "Vault-Konventionen** eingegliedert. Bitte den Plan prüfen und "
-            "**einmal für den ganzen Batch** bestätigen."
-        )
+# ===========================================================================
+# Tab 1: Konvertierung
+# ===========================================================================
+with tab_convert:
+    col_scan, col_analyze = st.columns(2)
+    scan = col_scan.button("Dateien scannen", width="stretch")
+    analyze = col_analyze.button("Ziel analysieren", type="primary", width="stretch")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        placement = st.radio(
-            "Notizen ablegen",
-            options=["In Unterordner", "In Ziel-Wurzel"],
-            index=0 if reco.notes_subdir else 1,
-            help="In einen dedizierten Unterordner (schont einen kuratierten "
-            "Vault) oder direkt in die Wurzel (fügt sich in bestehende "
-            "gleichnamige Ordner ein).",
-        )
-        default_sub = reco.notes_subdir or dw.DEFAULT_IMPORT_SUBDIR
-        notes_subdir = ""
-        if placement == "In Unterordner":
-            notes_subdir = st.text_input("Unterordner-Name", value=default_sub)
-        add_frontmatter = st.toggle(
-            "Frontmatter/Properties schreiben",
-            value=reco.add_frontmatter,
-            help="Obsidian liest YAML-Frontmatter als Properties "
-            "(source, original_path, assets_folder).",
-        )
-    with c2:
-        attach_adjacent = st.toggle(
-            "Anhänge neben der Notiz",
-            value=(reco.attachments_mode == "adjacent"),
-            help="An = per-Notiz-Ordner (folgt der Obsidian-Einstellung "
-            "„neben der Notiz“). Aus = ein zentraler Anhang-Ordner.",
-        )
-        attachments_subdir = reco.attachments_subdir
-        if not attach_adjacent:
-            attachments_subdir = st.text_input(
-                "Zentraler Anhang-Ordner", value=reco.attachments_subdir or "assets"
+    if scan:
+        if not input_dir or not Path(input_dir).is_dir():
+            st.error("Bitte einen gültigen Quellordner angeben.")
+        else:
+            files = dw.discover_files(
+                input_dir, exclude_dirs=(output_dir, archive_dir)
             )
-        mirror = st.toggle(
-            "Quellstruktur spiegeln",
-            value=reco.mirror_structure,
-            help="Unterordner-Struktur des Quellordners im Ziel nachbilden.",
+            st.session_state["scanned_files"] = [str(f) for f in files]
+            st.success(f"{len(files)} unterstützte Datei(en) gefunden.")
+    elif st.session_state.get("scanned_files"):
+        st.caption(
+            f"Letzter Scan: {len(st.session_state['scanned_files'])} Datei(en)."
         )
 
-    config = dw.ConverterConfig(
-        do_ocr=do_ocr,
-        on_success=on_success,
-        archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
-        notes_subdir=notes_subdir,
-        mirror_structure=mirror,
-        attachments_mode="adjacent" if attach_adjacent else "central",
-        attachments_subdir=attachments_subdir,
-        add_frontmatter=add_frontmatter,
+    # --- Schritt 1: Ziel analysieren --------------------------------------
+    if analyze:
+        if not output_dir:
+            st.error("Bitte einen Ziel-Vault-Ordner angeben.")
+        else:
+            vault_profile = dw.analyze_vault(output_dir)
+            st.session_state["vault_profile"] = vault_profile
+            st.session_state["vault_profile_target"] = output_dir
+            st.session_state["plan_reco"] = dw.recommend_config(vault_profile)
+
+    profile = st.session_state.get("vault_profile")
+    profile_valid = (
+        profile is not None
+        and st.session_state.get("vault_profile_target") == output_dir
     )
 
-    # Plan-Zusammenfassung (genau das, was bestätigt wird).
-    st.markdown("**Zusammenfassung:**")
-    for line in dw.describe_plan(profile, config):
-        st.markdown(f"- {line}")
+    # --- Schritt 2: Plan pruefen und einmal bestaetigen --------------------
+    confirm = False
+    if profile_valid:
+        reco = st.session_state["plan_reco"]
 
-    confirm = st.button(
-        "🚀 Plan bestätigen & konvertieren",
-        type="primary",
-        use_container_width=True,
-    )
-else:
-    st.info(
-        "Ziel-Vault-Ordner angeben und **„Ziel analysieren & Plan erstellen“** "
-        "klicken — danach wird der Integrationsplan zur Bestätigung angezeigt."
-    )
+        _overline("Zielordner-Analyse")
+        type_label = {
+            "obsidian": "Obsidian-Vault",
+            "logseq": "Logseq-Graph",
+            "folder": "Bestehender Ordner",
+            "new": "Neuer Ordner",
+        }.get(profile.vault_type, profile.vault_type)
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Zieltyp", type_label)
+        a2.metric("Vorhandene Notizen", profile.note_count)
+        a3.metric("Ordner auf oberster Ebene", len(profile.top_level_folders))
+        for obs in profile.observations:
+            st.caption(f"– {obs}")
+        if profile.top_level_folders:
+            st.caption(
+                "Bestehende Ordner: "
+                + ", ".join(profile.top_level_folders[:12])
+                + (" …" if len(profile.top_level_folders) > 12 else "")
+            )
 
-# ---------------------------------------------------------------------------
-# Schritt 3: Konvertierung (erst nach Bestaetigung des Plans)
-# ---------------------------------------------------------------------------
-if confirm and config is not None:
-    if not input_dir or not Path(input_dir).is_dir():
-        st.error("Bitte einen gültigen Quellordner angeben.")
-        st.stop()
-    if on_success == "archive" and not archive_dir:
-        st.error("Für 'Ins Archiv verschieben' bitte einen Archiv-Ordner angeben.")
-        st.stop()
+        _overline("Integrationsplan")
+        if profile.vault_type in ("obsidian", "logseq") and not profile.is_empty:
+            st.info(
+                "Bestehender Vault erkannt. Die Dateien werden entsprechend der "
+                "Vault-Konventionen eingegliedert – bitte den Plan prüfen und "
+                "einmal für den gesamten Batch bestätigen."
+            )
 
-    input_root = Path(input_dir).resolve()
-    out_root = Path(output_dir).resolve()
-    out_root.mkdir(parents=True, exist_ok=True)
-
-    files = dw.discover_files(input_root)
-    total = len(files)
-    if total == 0:
-        st.warning("Keine unterstützten Dateien gefunden.")
-        st.stop()
-
-    _section("Fortschritt")
-    progress = st.progress(0.0)
-    m1, m2, m3, m4 = st.columns(4)
-    ph_done = m1.empty()
-    ph_ok = m2.empty()
-    ph_fail = m3.empty()
-    ph_eta = m4.empty()
-    ph_current = st.empty()
-
-    ok = 0
-    moved = 0
-    images_total = 0
-    failures: list = []
-    start_time = time.perf_counter()
-
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=dw.init_worker,
-        initargs=(config, str(out_root), str(input_root)),
-    ) as pool:
-        futures = {pool.submit(dw.convert_file_task, str(f)): f for f in files}
-        for done, future in enumerate(as_completed(futures), start=1):
-            try:
-                res = future.result()
-            except Exception as exc:  # noqa: BLE001
-                res = dw.ConversionResult(
-                    source_path="<unbekannt>",
-                    success=False,
-                    error=f"Pool-Fehler: {exc}",
+        c1, c2 = st.columns(2)
+        with c1:
+            placement = st.radio(
+                "Ablage der Notizen",
+                options=["Eigener Unterordner", "Ziel-Wurzel"],
+                index=0 if reco.notes_subdir else 1,
+                help="Ein eigener Unterordner hält einen kuratierten Vault "
+                "sauber. Die Ziel-Wurzel fügt sich in bestehende gleichnamige "
+                "Ordner ein.",
+            )
+            notes_subdir = ""
+            if placement == "Eigener Unterordner":
+                notes_subdir = st.text_input(
+                    "Name des Unterordners",
+                    value=reco.notes_subdir or dw.DEFAULT_IMPORT_SUBDIR,
                 )
-            if res.success:
-                ok += 1
-                images_total += res.num_images
-                if res.moved_to:
-                    moved += 1
-            else:
-                failures.append(res)
-
-            elapsed = time.perf_counter() - start_time
-            rate = done / elapsed if elapsed else 0
-            eta = (total - done) / rate if rate else 0
-
-            progress.progress(done / total)
-            ph_done.metric("Verarbeitet", f"{done}/{total}")
-            ph_ok.metric("Erfolgreich", ok)
-            ph_fail.metric("Fehler", len(failures))
-            ph_eta.metric("ETA", _format_duration(eta))
-            ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
-
-    total_time = time.perf_counter() - start_time
-
-    # Ergebnis-Banner (custom, "Vault gefüllt").
-    icon = "✅" if not failures else "⚠️"
-    st.markdown(
-        f"""
-        <div class="result-card">
-          <div class="big">{icon}</div>
-          <div>
-            <div style="font-weight:750; font-size:1.05rem;">
-              Vault aktualisiert in {_format_duration(total_time)}
-            </div>
-            <div style="color:var(--v-muted); font-size:0.9rem;">
-              {ok} Dokument(e) konvertiert · {images_total} Bild(er) extrahiert · {len(failures)} Fehler
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if moved:
-        verb = "gelöscht" if on_success == "delete" else "ins Archiv verschoben"
-        st.info(f"{moved} Originaldatei(en) {verb}.")
-
-    # -------------------- Fehlerprotokoll --------------------
-    if failures:
-        _section("⚠️ Fehlerprotokoll")
-
-        cat_counts: dict[str, int] = {}
-        for r in failures:
-            cat = r.error_category or "fehler"
-            cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        st.caption(
-            "Kategorien: "
-            + " · ".join(
-                f"{cat} ({n})"
-                for cat, n in sorted(cat_counts.items(), key=lambda kv: -kv[1])
+            add_frontmatter = st.toggle(
+                "Frontmatter-Properties schreiben",
+                value=reco.add_frontmatter,
+                help="source, original_path und assets_folder als "
+                "Obsidian-Properties.",
             )
-        )
-
-        # Tabelle mit klickbarem Quellenlink (Datei + Ordner im Original).
-        rows = []
-        for r in failures:
-            p = Path(r.source_path)
-            rows.append(
-                {
-                    "Datei": p.name,
-                    "Kategorie": r.error_category or "fehler",
-                    "Hinweis": r.error_hint or "",
-                    "Fehler": r.error or "",
-                    "Datei öffnen": _file_uri(str(p)),
-                    "Ordner öffnen": _file_uri(str(p.parent)),
-                    "Pfad": str(p),
-                }
+        with c2:
+            attach_adjacent = st.toggle(
+                "Anhänge neben der Notiz ablegen",
+                value=(reco.attachments_mode == "adjacent"),
+                help="Aktiviert: ein Ordner je Notiz (Obsidian-Einstellung "
+                "„neben der Notiz“). Deaktiviert: ein zentraler Anhang-Ordner.",
             )
-        st.dataframe(
-            rows,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Datei öffnen": st.column_config.LinkColumn(
-                    "Datei öffnen", display_text="📄 öffnen"
-                ),
-                "Ordner öffnen": st.column_config.LinkColumn(
-                    "Ordner öffnen", display_text="📂 Ordner"
-                ),
-            },
-        )
-        st.caption(
-            "Hinweis: Manche Browser blockieren `file://`-Links aus Sicherheits"
-            "gründen. Dann den Pfad aus der Spalte *Pfad* kopieren."
-        )
+            attachments_subdir = reco.attachments_subdir
+            if not attach_adjacent:
+                attachments_subdir = st.text_input(
+                    "Zentraler Anhang-Ordner",
+                    value=reco.attachments_subdir or "assets",
+                )
+            mirror = st.toggle(
+                "Quellstruktur spiegeln",
+                value=reco.mirror_structure,
+                help="Unterordner des Quellordners im Ziel nachbilden.",
+            )
 
-        # Echte Ursache pro Datei: voller Traceback zum Aufklappen.
-        st.markdown("**Was ist wirklich passiert? (Details je Datei)**")
-        for r in failures:
-            p = Path(r.source_path)
-            with st.expander(f"{p.name} — {r.error or 'Fehler'}"):
-                st.write(f"**Kategorie:** {r.error_category or 'fehler'}")
-                if r.error_hint:
-                    st.write(f"**Hinweis:** {r.error_hint}")
-                st.write(f"**Original:** `{p}`")
-                uri = _file_uri(str(p))
-                if uri:
-                    st.markdown(
-                        f"[📄 Datei öffnen]({uri}) · "
-                        f"[📂 Ordner öffnen]({_file_uri(str(p.parent))})"
-                    )
-                st.code(r.error_detail or r.error or "", language="text")
-
-        st.download_button(
-            "⬇️ Fehlerprotokoll (CSV) herunterladen",
-            data=_errors_to_csv(failures),
-            file_name="docling_fehler.csv",
-            mime="text/csv",
+        config = dw.ConverterConfig(
+            do_ocr=do_ocr,
+            on_success=on_success,
+            archive_dir=str(Path(archive_dir).resolve()) if archive_dir else None,
+            notes_subdir=notes_subdir,
+            mirror_structure=mirror,
+            attachments_mode="adjacent" if attach_adjacent else "central",
+            attachments_subdir=attachments_subdir,
+            add_frontmatter=add_frontmatter,
         )
 
+        with st.container(border=True):
+            st.markdown("**Zusammenfassung**")
+            for line in dw.describe_plan(profile, config):
+                st.markdown(f"- {line}")
 
-# ---------------------------------------------------------------------------
-# Automatisierung: Jobs & Ordnerueberwachung
-# ---------------------------------------------------------------------------
-_section("🗓️ Automatisierung: Jobs & Ordnerüberwachung")
-st.caption(
-    "**Sichere, inkrementelle Jobs:** verknüpfen Quell- und Ziel-Ordner mit dem "
-    "bestätigten Plan. Bei jedem Lauf werden nur **neue oder geänderte** Dateien "
-    "verarbeitet (idempotent, wiederaufsetzbar, mit Sperre gegen Doppelläufe)."
-)
-
-with st.expander("➕ Neuen Job aus den aktuellen Einstellungen anlegen"):
-    if not input_dir or not output_dir:
-        st.info("Quell- und Ziel-Ordner in der Sidebar angeben.")
-    elif config is None:
-        st.info(
-            "Zuerst **„Ziel analysieren & Plan erstellen“** ausführen — der Job "
-            "übernimmt exakt diesen bestätigten Integrationsplan."
+        confirm = st.button(
+            "Plan bestätigen und Konvertierung starten",
+            type="primary",
+            width="stretch",
         )
     else:
-        jn_col, jp_col = st.columns([2, 1])
-        job_name = jn_col.text_input(
-            "Job-Name", value=(Path(output_dir).name or "Job"), key="new_job_name"
+        st.caption(
+            "Ziel-Vault-Ordner angeben und „Ziel analysieren“ ausführen. "
+            "Der Integrationsplan wird anschließend zur Bestätigung angezeigt."
         )
-        poll = jp_col.number_input(
-            "Watch-Intervall (Sek.)", min_value=5, value=30, step=5, key="new_job_poll"
+
+    # --- Schritt 3: Konvertierung (nach Bestaetigung) ----------------------
+    if confirm and config is not None:
+        if not input_dir or not Path(input_dir).is_dir():
+            st.error("Bitte einen gültigen Quellordner angeben.")
+            st.stop()
+        if on_success == "archive" and not archive_dir:
+            st.error("Für „In Archiv verschieben“ bitte einen Archiv-Ordner angeben.")
+            st.stop()
+
+        input_root = Path(input_dir).resolve()
+        out_root = Path(output_dir).resolve()
+        out_root.mkdir(parents=True, exist_ok=True)
+
+        files = dw.discover_files(
+            input_root, exclude_dirs=(out_root, config.archive_dir)
         )
-        for line in dw.describe_plan(profile, config):
-            st.caption(f"• {line}")
-        if st.button("💾 Job speichern", key="save_job"):
-            newjob = jm.add_job(
-                job_name, input_dir, output_dir, config,
-                poll_interval=int(poll), max_workers=max_workers,
+        total = len(files)
+        if total == 0:
+            st.warning("Keine unterstützten Dateien gefunden.")
+            st.stop()
+
+        _overline("Fortschritt")
+        progress = st.progress(0.0)
+        m1, m2, m3, m4 = st.columns(4)
+        ph_done = m1.empty()
+        ph_ok = m2.empty()
+        ph_fail = m3.empty()
+        ph_eta = m4.empty()
+        ph_current = st.empty()
+
+        ok = 0
+        moved = 0
+        images_total = 0
+        failures: list = []
+        start_time = time.perf_counter()
+
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=dw.init_worker,
+            initargs=(config, str(out_root), str(input_root)),
+        ) as pool:
+            futures = {pool.submit(dw.convert_file_task, str(f)): f for f in files}
+            for done, future in enumerate(as_completed(futures), start=1):
+                try:
+                    res = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    res = dw.ConversionResult(
+                        source_path=str(futures[future]),
+                        success=False,
+                        error=f"Pool-Fehler: {exc}",
+                    )
+                if res.success:
+                    ok += 1
+                    images_total += res.num_images
+                    if res.moved_to:
+                        moved += 1
+                else:
+                    failures.append(res)
+
+                elapsed = time.perf_counter() - start_time
+                rate = done / elapsed if elapsed else 0
+                eta = (total - done) / rate if rate else 0
+
+                progress.progress(done / total)
+                ph_done.metric("Verarbeitet", f"{done}/{total}")
+                ph_ok.metric("Erfolgreich", ok)
+                ph_fail.metric("Fehler", len(failures))
+                ph_eta.metric("Restzeit", _format_duration(eta))
+                ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
+
+        st.session_state["last_run"] = {
+            "target": str(out_root),
+            "duration": time.perf_counter() - start_time,
+            "ok": ok,
+            "images": images_total,
+            "moved": moved,
+            "on_success": on_success,
+            "failures": failures,
+        }
+
+    # --- Ergebnis (persistiert ueber Reruns) -------------------------------
+    last = st.session_state.get("last_run")
+    if last:
+        _overline("Ergebnis")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Konvertiert", last["ok"])
+        r2.metric("Bilder extrahiert", last["images"])
+        r3.metric("Fehler", len(last["failures"]))
+        r4.metric("Dauer", _format_duration(last["duration"]))
+        st.caption(f"Ziel: {last['target']}")
+        if last["moved"]:
+            verb = (
+                "gelöscht" if last["on_success"] == "delete"
+                else "ins Archiv verschoben"
             )
-            st.success(f"Job „{newjob.name}“ angelegt ({newjob.id}).")
+            st.caption(f"{last['moved']} Originaldatei(en) {verb}.")
+        if last["failures"]:
+            _render_failures(last["failures"])
 
-jobs = jm.load_jobs()
-if not jobs:
-    st.caption("Noch keine Jobs angelegt.")
-for j in jobs:
-    with st.container(border=True):
-        head, act = st.columns([3, 2])
-        head.markdown(f"**{j.name}**  ·  `{j.id}`")
-        head.caption(f"{j.source}  →  {j.target}")
-        manifest = jm.load_manifest(j.id)
-        done_n = sum(1 for e in manifest.values() if e.get("status") == "ok")
-        head.caption(f"Bereits konvertiert: {done_n} · Letzter Lauf: {j.last_run_at or '—'}")
+# ===========================================================================
+# Tab 2: Jobs & Ueberwachung
+# ===========================================================================
+with tab_jobs:
+    st.caption(
+        "Jobs verknüpfen Quell- und Zielordner mit dem bestätigten "
+        "Integrationsplan und verarbeiten bei jedem Lauf nur neue oder "
+        "geänderte Dateien – wiederaufsetzbar, mit Sperre gegen Doppelläufe. "
+        "Zieldateien werden nie automatisch entfernt."
+    )
 
-        b1, b2, b3 = act.columns(3)
-        if b1.button("🔍 Prüfen", key=f"plan_{j.id}", help="Dry-Run: was steht an?"):
-            summary = jm.run_job(j, dry_run=True)
-            st.session_state[f"plan_{j.id}"] = summary.changes
-        if b2.button("▶️ Ausführen", key=f"run_{j.id}", help="Änderungen jetzt konvertieren"):
-            try:
-                with st.spinner("Konvertiere neue/geänderte Dateien…"):
-                    summary = jm.run_job(j)
-                st.success(
-                    f"{summary.converted_ok} konvertiert, "
-                    f"{summary.converted_failed} Fehler "
-                    f"(neu={summary.changes['neu']}, geändert={summary.changes['geaendert']})."
+    with st.expander("Neuen Job anlegen"):
+        if not input_dir or not output_dir:
+            st.info("Quell- und Ziel-Ordner in der Seitenleiste angeben.")
+        elif config is None:
+            st.info(
+                "Im Tab „Konvertierung“ zuerst „Ziel analysieren“ ausführen – "
+                "der Job übernimmt den dort bestätigten Integrationsplan."
+            )
+        else:
+            jn_col, jp_col = st.columns([2, 1])
+            job_name = jn_col.text_input(
+                "Job-Name",
+                value=(Path(output_dir).name or "Import"),
+                key="new_job_name",
+            )
+            poll = jp_col.number_input(
+                "Watch-Intervall (Sekunden)",
+                min_value=5, value=30, step=5,
+                key="new_job_poll",
+            )
+            for line in dw.describe_plan(profile, config):
+                st.caption(f"– {line}")
+            if st.button("Job speichern", key="save_job"):
+                new_job = jm.add_job(
+                    job_name, input_dir, output_dir, config,
+                    poll_interval=int(poll), max_workers=max_workers,
                 )
-            except jm.JobLockedError as exc:
-                st.warning(str(exc))
-        if b3.button("🗑️", key=f"del_{j.id}", help="Job löschen"):
-            jm.remove_job(j.id)
-            st.rerun()
+                st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
 
-        pending = st.session_state.get(f"plan_{j.id}")
-        if pending:
-            st.caption(
-                "Anstehend — "
-                + " · ".join(f"{k}: {v}" for k, v in pending.items())
+    jobs = jm.load_jobs()
+    if not jobs:
+        st.caption("Noch keine Jobs angelegt.")
+
+    for j in jobs:
+        with st.container(border=True):
+            head, act = st.columns([3, 2])
+            head.markdown(f"**{j.name}** · `{j.id}`")
+            head.caption(f"{j.source} → {j.target}")
+
+            b1, b2, b3 = act.columns(3)
+            check_clicked = b1.button(
+                "Prüfen", key=f"plan_{j.id}",
+                help="Dry-Run: zeigt, was beim nächsten Lauf anstünde.",
             )
-        st.caption("Dauerhafte Ordnerüberwachung (läuft als eigener Prozess/Dienst):")
-        st.code(f"python job_manager.py watch {j.id}", language="bash")
+            run_clicked = b2.button(
+                "Ausführen", key=f"run_{j.id}",
+                help="Neue und geänderte Dateien jetzt konvertieren.",
+            )
+            del_clicked = b3.button(
+                "Löschen", key=f"del_{j.id}",
+                help="Job samt Manifest und Verlauf entfernen. "
+                "Konvertierte Dateien bleiben erhalten.",
+            )
+
+            if del_clicked:
+                jm.remove_job(j.id)
+                st.rerun()
+
+            if check_clicked:
+                summary = jm.run_job(j, dry_run=True)
+                st.session_state[f"check_{j.id}"] = summary.changes
+
+            if run_clicked:
+                run_bar = st.progress(0.0)
+                run_txt = st.empty()
+
+                def _cb(done, total, res, _bar=run_bar, _txt=run_txt):
+                    _bar.progress(done / total)
+                    _txt.caption(
+                        f"{done}/{total} · {Path(res.source_path).name}"
+                    )
+
+                try:
+                    summary = jm.run_job(j, progress=_cb, trigger="dashboard")
+                except jm.JobLockedError as exc:
+                    st.warning(str(exc))
+                else:
+                    run_bar.progress(1.0)
+                    if summary.converted_ok or summary.converted_failed:
+                        st.success(
+                            f"{summary.converted_ok} konvertiert, "
+                            f"{summary.converted_failed} Fehler "
+                            f"(neu: {summary.changes['neu']}, "
+                            f"geändert: {summary.changes['geaendert']})."
+                        )
+                    else:
+                        st.info("Keine neuen oder geänderten Dateien.")
+
+            # Status nach eventuellen Aktionen laden (aktuelle Zahlen).
+            manifest = jm.load_manifest(j.id)
+            done_n = sum(1 for e in manifest.values() if e.get("status") == "ok")
+            job_fresh = jm.get_job(j.id) or j
+            st.caption(
+                f"Bereits konvertiert: {done_n} · "
+                f"Letzter Lauf: {job_fresh.last_run_at or '–'} · "
+                f"Watch-Intervall: {j.poll_interval}s"
+            )
+
+            pending = st.session_state.get(f"check_{j.id}")
+            if pending:
+                st.caption(
+                    "Anstehend – "
+                    + " · ".join(f"{k}: {v}" for k, v in pending.items())
+                )
+
+            history = jm.load_history(j.id)
+            with st.expander(f"Verlauf ({len(history)} Läufe)"):
+                if history:
+                    hist_rows = [
+                        {
+                            "Zeitpunkt": rec.get("started_at", "–"),
+                            "Auslöser": rec.get("trigger", "–"),
+                            "Neu": rec.get("changes", {}).get("neu", 0),
+                            "Geändert": rec.get("changes", {}).get("geaendert", 0),
+                            "Konvertiert": rec.get("converted_ok", 0),
+                            "Fehler": rec.get("converted_failed", 0),
+                            "Dauer (s)": rec.get("duration_s", 0),
+                        }
+                        for rec in reversed(history)
+                    ]
+                    st.dataframe(hist_rows, width="stretch", hide_index=True)
+                    last_fail = next(
+                        (rec for rec in reversed(history) if rec.get("failures")),
+                        None,
+                    )
+                    if last_fail:
+                        st.caption("Fehler im letzten fehlerhaften Lauf:")
+                        for f in last_fail["failures"]:
+                            st.caption(
+                                f"– {Path(f.get('file', '')).name}: "
+                                f"{f.get('error', '')}"
+                            )
+                else:
+                    st.caption("Noch keine Läufe protokolliert.")
+
+            st.caption("Dauerhafte Überwachung (eigener Prozess oder Dienst):")
+            st.code(f"python job_manager.py watch {j.id}", language="bash")

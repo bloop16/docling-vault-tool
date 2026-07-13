@@ -1,15 +1,18 @@
-# Basis-Theme fuer das Docling Vault Tool (dunkel, technisch).
-# Feinschliff (Hero, Feature-Karten, Pipeline) passiert per CSS in app_streamlit.py.
+# Theme fuer das Docling Vault Tool: dunkel, nuechtern, eine Akzentfarbe.
+# Feinschliff (Typografie, Abstaende) per CSS in app_streamlit.py.
 [theme]
 base = "dark"
-primaryColor = "#7c8cff"
-backgroundColor = "#0b0f17"
-secondaryBackgroundColor = "#121a28"
-textColor = "#e6edf3"
+primaryColor = "#4c8bf5"
+backgroundColor = "#12151c"
+secondaryBackgroundColor = "#181c25"
+textColor = "#d8dee8"
 font = "sans serif"
 
+[client]
+# Streamlit-eigene Toolbar (Deploy-Button, Menue) ausblenden.
+toolbarMode = "minimal"
+
 [server]
-# Grosse Vaults: Upload-/Message-Limits grosszuegig setzen.
 maxUploadSize = 2048
 
 [browser]

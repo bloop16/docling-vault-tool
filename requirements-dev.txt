@@ -1,0 +1,2 @@
+# Entwicklungs-/Testabhaengigkeiten (Laufzeit: siehe requirements.txt).
+pytest>=8

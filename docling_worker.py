@@ -132,15 +132,25 @@ def build_converter(config: Optional[ConverterConfig] = None):
 def discover_files(
     input_dir: os.PathLike | str,
     extensions: Iterable[str] = SUPPORTED_EXTENSIONS,
+    exclude_dirs: Iterable[os.PathLike | str | None] = (),
 ) -> list[Path]:
     """Findet rekursiv alle unterstuetzten Dateien unterhalb von ``input_dir``.
 
     Ergebnis ist stabil sortiert (deterministische Reihenfolge/ETA). Versteckte
     Verzeichnisse (``.git`` etc.) und typische temporaere Office-Sperrdateien
     (``~$...``) werden uebersprungen.
+
+    ``exclude_dirs`` blendet Verzeichnisse aus. Wichtigster Fall: liegt der
+    Zielordner (Vault) innerhalb des Quellordners, wuerden die erzeugten
+    ``.md``-Dateien beim naechsten Lauf selbst als Quelle erkannt -- Aufrufer
+    uebergeben deshalb Ziel- und Archivordner.
     """
     input_path = Path(input_dir)
     exts = {e.lower() for e in extensions}
+    excluded: list[Path] = []
+    for e in exclude_dirs:
+        if e:
+            excluded.append(Path(e).absolute())
     files: list[Path] = []
     for path in input_path.rglob("*"):
         if not path.is_file():
@@ -151,6 +161,10 @@ def discover_files(
             continue
         if any(part.startswith(".") for part in path.relative_to(input_path).parts[:-1]):
             continue
+        if excluded:
+            p_abs = path.absolute()
+            if any(ex == p_abs or ex in p_abs.parents for ex in excluded):
+                continue
         files.append(path)
     return sorted(files)
 
@@ -239,7 +253,7 @@ def analyze_vault(target_dir: os.PathLike | str) -> VaultProfile:
     observations: list[str] = []
 
     if not target.exists():
-        observations.append("Ziel existiert noch nicht — wird als neuer Ordner angelegt.")
+        observations.append("Ziel existiert noch nicht – wird als neuer Ordner angelegt.")
         return VaultProfile(
             target_path=str(target), exists=False, is_empty=True, vault_type="new",
             note_count=0, top_level_folders=[], attachment_folder_raw=None,
@@ -291,14 +305,14 @@ def analyze_vault(target_dir: os.PathLike | str) -> VaultProfile:
         if attach_raw is not None:
             where = ("neben der jeweiligen Notiz" if attach_note_relative
                      else (f"„{attach_resolved}“" if attach_resolved else "im Vault-Stamm"))
-            observations.append(f"Obsidian legt Anhaenge {where} ab.")
+            observations.append(f"Obsidian legt Anhänge {where} ab.")
     elif is_logseq:
         vault_type = "logseq"
-        observations.append("Logseq-Graph erkannt (logseq/). Notizen → pages/, Anhaenge → assets/.")
+        observations.append("Logseq-Graph erkannt (logseq/). Notizen → pages/, Anhänge → assets/.")
     else:
         vault_type = "folder"
         if is_empty:
-            observations.append("Leerer Ordner — Struktur wird neu aufgebaut.")
+            observations.append("Leerer Ordner – Struktur wird neu aufgebaut.")
         else:
             observations.append("Bestehender Ordner (kein Vault-Marker gefunden).")
 
@@ -367,7 +381,7 @@ def describe_plan(profile: VaultProfile, config: ConverterConfig) -> list[str]:
     lines = [
         f"Ziel: {target}",
         f"Notizen (.md) → {notes_loc}  ({struct})",
-        f"Anhaenge/Bilder → {attach}",
+        f"Anhänge/Bilder → {attach}",
         f"Frontmatter/Properties: {'ja' if config.add_frontmatter else 'nein'}",
     ]
     return lines
@@ -412,7 +426,7 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     (
         ("password", "encrypted", "passwort", "verschlüss", "decrypt", "is protected"),
         "passwortgeschützt",
-        "Datei ist passwort-/verschluesselungsgeschuetzt — vor der Konvertierung entsperren.",
+        "Datei ist passwortgeschützt oder verschlüsselt – vor der Konvertierung entsperren.",
     ),
     (
         ("no such file", "does not exist", "filenotfound", "permission denied"),
@@ -422,24 +436,24 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     (
         ("memoryerror", "cannot allocate", "out of memory", "oom", "killed"),
         "speicher",
-        "Zu wenig Arbeitsspeicher — Anzahl paralleler Prozesse reduzieren.",
+        "Zu wenig Arbeitsspeicher – Anzahl paralleler Prozesse reduzieren.",
     ),
     (
         ("timeout", "timed out"),
         "timeout",
-        "Zeitueberschreitung bei der Verarbeitung — Datei ggf. sehr gross/komplex.",
+        "Zeitüberschreitung bei der Verarbeitung – Datei ist möglicherweise sehr groß oder komplex.",
     ),
     (
         ("unsupported", "no backend", "not supported", "unknown format"),
         "nicht unterstützt",
-        "Format/Variante wird von Docling nicht unterstuetzt.",
+        "Format/Variante wird von Docling nicht unterstützt.",
     ),
     (
         ("corrupt", "damaged", "eof marker", "not a pdf", "invalid", "broken",
          "cannot read", "failed to parse", "malformed", "bad", "truncated",
          "zip file", "not a zip"),
         "beschädigt",
-        "Datei ist vermutlich beschaedigt oder kein gueltiges Dokument.",
+        "Datei ist vermutlich beschädigt oder kein gültiges Dokument.",
     ),
 ]
 
@@ -450,7 +464,7 @@ def _classify_error(text: str) -> tuple[str, str]:
     for keywords, category, hint in _ERROR_RULES:
         if any(k in low for k in keywords):
             return category, hint
-    return "fehler", "Unerwarteter Fehler — vollstaendige Ursache siehe Details/Traceback."
+    return "fehler", "Unerwarteter Fehler – vollständige Ursache siehe Traceback."
 
 
 def _apply_post_action(
@@ -544,8 +558,22 @@ def convert_single_file(
             if num_images:
                 assets_rel = os.path.relpath(assets_dir, out_root).replace(os.sep, "/")
 
+        body = md_path.read_text(encoding="utf-8")
+
+        # Docling referenziert Bilder u. U. mit absolutem Pfad, wenn der
+        # Asset-Ordner nicht unterhalb des Notiz-Ordners liegt (zentrale
+        # Ablage + verschachtelte Notiz). Fuer Obsidian muessen die Links
+        # relativ zur Notiz sein.
+        if num_images:
+            abs_prefix = assets_dir.absolute().as_posix()
+            if abs_prefix in body:
+                rel_prefix = Path(
+                    os.path.relpath(assets_dir, md_path.parent)
+                ).as_posix()
+                body = body.replace(abs_prefix, rel_prefix)
+
         if config.add_frontmatter:
-            frontmatter = _yaml_frontmatter(
+            body = _yaml_frontmatter(
                 {
                     "source": source.name,
                     "original_path": str(source.resolve()),
@@ -554,9 +582,9 @@ def convert_single_file(
                     .isoformat(timespec="seconds"),
                     "converter": "docling",
                 }
-            )
-            body = md_path.read_text(encoding="utf-8")
-            md_path.write_text(frontmatter + body, encoding="utf-8")
+            ) + body
+
+        md_path.write_text(body, encoding="utf-8")
 
         # Original erst NACH erfolgreichem Schreiben archivieren/loeschen.
         moved_to = _apply_post_action(source, config, input_root)
