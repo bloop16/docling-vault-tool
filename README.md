@@ -33,6 +33,7 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
 | `dashboard_launcher.py` | Einstiegspunkt für den `docling-vault-ui`-Befehl |
 | `file_transfer.py`  | Upload-Ablage und ZIP-Verpackung für den Server-Betrieb |
+| `vault_builder.py`  | Post-Processing: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks, Frontmatter) |
 | `pyproject.toml`    | Paketdefinition mit Konsolenbefehlen |
 | `Dockerfile` / `docker-compose.yml` | Container-Betrieb auf einem Headless-Server |
 | `deploy/`           | Dienst-Vorlagen (systemd, Windows-Aufgabenplanung) |
@@ -78,6 +79,7 @@ pip install .            # oder: pip install .[watch] für den Ereignismodus
 | `docling-vault`      | Batch-Konvertierung per CLI (entspricht `docling_worker.py`) |
 | `docling-vault-jobs` | Jobs verwalten: `add`, `list`, `plan`, `run`, `history`, `watch`, `rm` |
 | `docling-vault-ui`   | Dashboard starten (Streamlit-Optionen wie `--server.port 8080` anhängbar) |
+| `docling-vault-build` | Vault-Build standalone: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks) |
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
@@ -185,6 +187,53 @@ Liegt der Zielordner innerhalb des Quellordners, wird er beim Scan automatisch
 ausgenommen – bereits erzeugte Markdown-Dateien werden also nie erneut als
 Quelle verarbeitet. Dasselbe gilt für den Archiv-Ordner.
 
+## Vault-Build (Post-Processing)
+
+Der rohe Docling-Output (`.md` + Bilder) wird mit dem **Vault-Builder** in
+einen funktionierenden Obsidian-Vault überführt. Der Schritt ist optional und
+läuft getrennt von der Konvertierung – der reine Convert-Modus bleibt
+unverändert.
+
+```bash
+# Integriert: Konvertierung + Build in einem Aufruf
+docling-vault -i /pfad/zu/quellen -o /pfad/zum/vault --build-vault
+
+# Getrennt: Build standalone auf einen bestehenden Docling-Output-Ordner
+docling-vault-build --input /pfad/zum/docling-output --vault /pfad/zum/vault
+```
+
+Was der Builder tut:
+
+- **Frontmatter** (geschrieben mit `python-frontmatter`): normiertes Schema
+  `title`, `source_path`, `converted_at` (ISO 8601), `tags` – vorhandene
+  Felder aus der Konvertierung (z. B. `original_path`) werden übernommen,
+  Zusatzfelder bleiben erhalten.
+- **Attachments**: Bilder wandern nach `Attachments/<notiz-slug>/`, alle
+  Referenzen werden zu Obsidian-Einbettungen `![[bild.png]]` umgeschrieben.
+  Bildnamen sind vault-weit eindeutig (Hash-Suffix bei Namenskonflikt,
+  inhaltsgleiche Bilder werden dedupliziert); Web-URLs bleiben unangetastet.
+- **Kollisionsschutz**: Notizname = Slug des Quelldateinamens; bei Konflikt
+  Suffix mit Kurz-Hash der Quelldatei – es wird niemals überschrieben.
+- **Inbox-Ablage**: Alle Notizen landen zunächst in `Inbox/`. Einsortieren und
+  Verlinken übernimmt nachgelagert der Vault-Curator-Agent
+  (nomic-embed-text/Ollama) – Embedding-basiertes Auto-Linking ist bewusst
+  nicht Teil dieses Tools.
+
+Ergebnisstruktur:
+
+```
+vault/
+├── Inbox/
+│   ├── Q1-Bericht.md            # ![[diagramm.png]], normiertes Frontmatter
+│   └── Q1-Bericht-a1b2c3d4.md   # Namenskonflikt → Hash-Suffix
+└── Attachments/
+    └── Q1-Bericht/
+        └── diagramm.png
+```
+
+Der Builder ist idempotent: `Inbox/` und `Attachments/` werden beim Scan
+ausgenommen, ein zweiter Lauf ändert nichts.
+
 ## Nutzung ohne Dashboard (CLI)
 
 ```bash
@@ -220,6 +269,7 @@ Oder direkt über das Setup-Skript:
 | `--notes-subdir`  | Unterordner im Ziel für die Notizen (überschreibt Empfehlung; `""` = Wurzel) |
 | `--attachments-subdir` | Name des zentralen Anhang-Ordners (überschreibt Empfehlung) |
 | `--no-frontmatter`| Kein YAML-Frontmatter voranstellen |
+| `--build-vault`   | Nach der Konvertierung den Vault-Build ausführen (Inbox, Attachments, Wikilinks) |
 | `--yes` / `-y`    | Integrationsplan ohne Rückfrage bestätigen |
 | `--error-log`     | Pfad für ein JSON-Fehlerprotokoll fehlgeschlagener Dateien |
 
