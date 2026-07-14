@@ -2,3 +2,5 @@
 pytest>=8
 # Optional zur Laufzeit (Ereignismodus der Ordnerueberwachung), hier fuer Tests.
 watchdog>=4
+# Laufzeitabhaengigkeit des Vault-Builders, hier fuer die Tests ohne Docling.
+python-frontmatter>=1.0

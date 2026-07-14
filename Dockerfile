@@ -23,7 +23,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 COPY pyproject.toml README.md LICENSE ./
-COPY docling_worker.py job_manager.py app_streamlit.py dashboard_launcher.py file_transfer.py ./
+COPY docling_worker.py job_manager.py app_streamlit.py dashboard_launcher.py file_transfer.py vault_builder.py ./
 RUN pip install --no-cache-dir ".[watch]"
 
 # Alle veraenderlichen Daten unter /data (Volumes, siehe docker-compose.yml):
