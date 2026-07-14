@@ -32,7 +32,9 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
 | `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
 | `dashboard_launcher.py` | Einstiegspunkt für den `docling-vault-ui`-Befehl |
+| `file_transfer.py`  | Upload-Ablage und ZIP-Verpackung für den Server-Betrieb |
 | `pyproject.toml`    | Paketdefinition mit Konsolenbefehlen |
+| `Dockerfile` / `docker-compose.yml` | Container-Betrieb auf einem Headless-Server |
 | `deploy/`           | Dienst-Vorlagen (systemd, Windows-Aufgabenplanung) |
 | `tests/`            | Testsuite (läuft ohne installiertes Docling) |
 | `requirements.txt`  | Abhängigkeiten (Docling + Streamlit) |
@@ -50,6 +52,9 @@ Zwei Bereiche:
 - **Jobs & Überwachung** – Jobs anlegen, per Dry-Run prüfen, inkrementell
   ausführen und den Lauf-Verlauf einsehen; der Befehl für die dauerhafte
   Ordnerüberwachung wird pro Job angezeigt.
+- **Datenaustausch** – für den Server-Betrieb ohne gemountete Ordner: Dateien
+  oder ZIP-Archive hochladen (werden serverseitig entpackt) und den fertigen
+  Vault als ZIP herunterladen.
 
 In der Seitenleiste lassen sich die Docling-Funktionen je Lauf zuschalten:
 **Bilder extrahieren** (inklusive Skalierung der Bildauflösung),
@@ -96,6 +101,59 @@ Quell- und Ziel-Ordner werden im Dashboard eingetragen.
 ```
 
 Installiert Python bei Bedarf via `winget`, richtet die Umgebung ein und startet das Dashboard.
+
+## Headless-Server & Docker
+
+Das Tool läuft auch auf einem Server ohne Bildschirm; das Dashboard wird dann
+im Browser über `http://<server-ip>:8501` bedient.
+
+**Docker (empfohlen):**
+
+```bash
+docker compose up -d                  # Dashboard auf Port 8501
+docker compose --profile watch up -d  # zusätzlich Ordnerüberwachung
+                                      # (vorher DOCLING_JOB=<job-id> setzen)
+```
+
+Das Image ist CPU-only (PyTorch aus dem CPU-Index, ~3–4 GB statt 8+ GB).
+Beim ersten Lauf lädt Docling seine Modelle in das Volume `docling-models` –
+das dauert einmalig einige Minuten, danach starten Läufe sofort. Jobs,
+Manifeste und Verläufe liegen im Volume `docling-config` und überleben
+Container-Neustarts. Healthcheck: `http://<server-ip>:8501/_stcore/health`.
+
+**pip (ohne Docker):**
+
+```bash
+pip install .[watch]
+docling-vault-ui --server.address 0.0.0.0 --server.port 8501
+```
+
+### Daten effizient zum Server und zurück
+
+Grundprinzip: **Daten nicht hoch- und runterladen, sondern mounten.** Die
+Konvertierung arbeitet dann direkt auf den Originalordnern, und der fertige
+Vault liegt sofort dort, wo er gebraucht wird.
+
+| Datenquelle | Empfohlener Weg |
+|---|---|
+| NAS / anderer Host | SMB/NFS-Share auf dem Docker-Host mounten und in `docker-compose.yml` als Bind-Mount eintragen (z. B. `/mnt/nas/dokumente:/data/source`) – kein Kopieren nötig |
+| SharePoint / OneDrive | `rclone sync onedrive:Dokumente ./data/source` zeitgesteuert (Cron/n8n) oder `rclone mount` – der Eingangsordner füllt sich automatisch |
+| Client-PCs | Syncthing-Ordner oder eine Server-Freigabe (SMB) als Eingangsordner; die Clients legen Dateien einfach dort ab |
+| Ad-hoc / kleine Mengen | ZIP-/Datei-Upload und ZIP-Download im Dashboard-Tab **Datenaustausch** (bis ~2 GB je Upload) |
+
+**Ergebnis zurückholen:** Liegt der Ziel-Vault auf einem Share oder in einem
+Syncthing-Ordner, öffnet Obsidian ihn direkt – nichts muss heruntergeladen
+werden. Für Ad-hoc-Fälle verpackt der Tab *Datenaustausch* einen beliebigen
+Ordner als ZIP zum Download (mit Größenwarnung ab 2 GB).
+
+In Kombination mit der Ordnerüberwachung entsteht so eine Pipeline ohne
+manuelle Schritte: Client/rclone legt Dateien im Eingangsordner ab → der
+`watch`-Container konvertiert sie inkrementell → der Vault auf dem Share ist
+aktuell.
+
+**Sicherheit:** Streamlit hat keine eingebaute Authentifizierung. Das
+Dashboard nur im LAN/VPN erreichbar machen oder einen Reverse-Proxy mit
+Login davorschalten (Caddy, Traefik, nginx + Basic Auth).
 
 ## Zielordner & Vault-Integration
 
