@@ -23,6 +23,7 @@ from pathlib import Path
 import streamlit as st
 
 import docling_worker as dw
+import file_transfer as ft
 import job_manager as jm
 
 st.set_page_config(
@@ -260,15 +261,21 @@ st.markdown(
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown('<div class="side-label">Verzeichnisse</div>', unsafe_allow_html=True)
+    # Vorbelegung aus Umgebungsvariablen: im Container zeigen die Felder damit
+    # direkt auf die gemounteten Ordner (docker-compose setzt DOCLING_*_DIR).
     input_dir = st.text_input(
         "Quellordner",
-        value=st.session_state.get("input_dir", ""),
+        value=st.session_state.get(
+            "input_dir", os.environ.get("DOCLING_SOURCE_DIR", "")
+        ),
         placeholder="/pfad/zu/den/dokumenten",
         help="Wird rekursiv nach unterstützten Dateien durchsucht.",
     )
     output_dir = st.text_input(
         "Ziel-Vault-Ordner",
-        value=st.session_state.get("output_dir", ""),
+        value=st.session_state.get(
+            "output_dir", os.environ.get("DOCLING_TARGET_DIR", "")
+        ),
         placeholder="/pfad/zum/vault",
         help="Zielordner für die Markdown-Dateien. Bestehende Vaults werden "
         "analysiert und die Dateien entsprechend eingegliedert.",
@@ -360,7 +367,9 @@ with st.sidebar:
     if on_success == "archive":
         archive_dir = st.text_input(
             "Archiv-Ordner",
-            value=st.session_state.get("archive_dir", ""),
+            value=st.session_state.get(
+                "archive_dir", os.environ.get("DOCLING_ARCHIVE_DIR", "")
+            ),
             placeholder="/pfad/zum/archiv",
             help="Die Struktur des Quellordners wird im Archiv gespiegelt.",
         )
@@ -381,7 +390,9 @@ st.session_state["output_dir"] = output_dir
 profile = None
 config: dw.ConverterConfig | None = None
 
-tab_convert, tab_jobs = st.tabs(["Konvertierung", "Jobs & Überwachung"])
+tab_convert, tab_jobs, tab_transfer = st.tabs(
+    ["Konvertierung", "Jobs & Überwachung", "Datenaustausch"]
+)
 
 # ===========================================================================
 # Tab 1: Konvertierung
@@ -774,3 +785,90 @@ with tab_jobs:
 
             st.caption("Dauerhafte Überwachung (eigener Prozess oder Dienst):")
             st.code(f"python job_manager.py watch {j.id}", language="bash")
+
+# ===========================================================================
+# Tab 3: Datenaustausch (Ad-hoc-Upload/-Download fuer den Server-Betrieb)
+# ===========================================================================
+with tab_transfer:
+    st.caption(
+        "Für kleine Datenmengen ohne gemountete Ordner: Dateien hochladen, "
+        "konvertieren, Ergebnis als ZIP herunterladen. Große Bestände gehören "
+        "auf gemountete Ordner oder Netzwerk-Shares – siehe README, Abschnitt "
+        "„Headless-Server & Docker“."
+    )
+
+    _overline("Dateien hochladen")
+    if not input_dir:
+        st.info(
+            "Zuerst in der Seitenleiste einen Quellordner angeben – Uploads "
+            "werden in dessen Unterordner „uploads“ abgelegt."
+        )
+    else:
+        upload_root = Path(input_dir) / "uploads"
+        uploaded = st.file_uploader(
+            "Dokumente oder ZIP-Archive",
+            accept_multiple_files=True,
+            type=[e.lstrip(".") for e in sorted(dw.SUPPORTED_EXTENSIONS)] + ["zip"],
+            help="ZIP-Archive werden serverseitig entpackt (Ordnerstruktur "
+            "bleibt erhalten). Ablage unter "
+            f"{upload_root}",
+        )
+        if uploaded and st.button("Hochladen und ablegen", type="primary"):
+            try:
+                stored = ft.store_uploads(
+                    [(f.name, f) for f in uploaded], upload_root
+                )
+            except ft.UnsafeZipError as exc:
+                st.error(f"ZIP abgelehnt: {exc}")
+            else:
+                st.success(
+                    f"{len(stored)} Datei(en) abgelegt unter `{upload_root}`. "
+                    "Der Ordner liegt im Quellordner und wird beim nächsten "
+                    "Scan bzw. Lauf mit verarbeitet."
+                )
+
+    _overline("Ergebnis herunterladen")
+    default_dl = ""
+    if output_dir:
+        import_dir = Path(output_dir) / dw.DEFAULT_IMPORT_SUBDIR
+        default_dl = str(import_dir if import_dir.is_dir() else output_dir)
+    download_dir = st.text_input(
+        "Ordner für den Download",
+        value=default_dl,
+        placeholder="/pfad/zum/vault",
+        help="Der Ordner wird rekursiv als ZIP verpackt (versteckte Ordner "
+        "wie .obsidian ausgenommen).",
+    )
+    if download_dir:
+        folder = Path(download_dir)
+        if not folder.is_dir():
+            st.error("Ordner existiert nicht.")
+        else:
+            size = ft.folder_size(folder)
+            st.caption(f"Geschätzte Größe (unkomprimiert): {ft.format_size(size)}")
+            if size > 2 * 1024**3:
+                st.warning(
+                    "Über 2 GB – der Browser-Download wird zäh. Für große "
+                    "Vaults besser einen gemounteten Ordner oder ein "
+                    "Netzwerk-Share verwenden."
+                )
+            if st.button("ZIP erstellen"):
+                import tempfile
+
+                with st.spinner("Verpacke Ordner…"):
+                    tmp = Path(tempfile.mkstemp(suffix=".zip")[1])
+                    ft.zip_folder(folder, tmp)
+                st.session_state["download_zip"] = str(tmp)
+                st.session_state["download_zip_name"] = f"{folder.name or 'vault'}.zip"
+
+            zip_path = st.session_state.get("download_zip")
+            if zip_path and Path(zip_path).exists():
+                with open(zip_path, "rb") as fh:
+                    st.download_button(
+                        f"{st.session_state['download_zip_name']} herunterladen "
+                        f"({ft.format_size(Path(zip_path).stat().st_size)})",
+                        data=fh,
+                        file_name=st.session_state["download_zip_name"],
+                        mime="application/zip",
+                        type="primary",
+                    )

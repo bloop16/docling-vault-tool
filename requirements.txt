@@ -3,3 +3,4 @@
 # Streamlit >= 1.48 wegen width="stretch" (ersetzt use_container_width).
 docling>=2.0
 streamlit>=1.48
+python-frontmatter>=1.0

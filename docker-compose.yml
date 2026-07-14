@@ -1,0 +1,52 @@
+# Docling Vault Tool -- Headless-Betrieb.
+#
+#   docker compose up -d                      # Dashboard: http://<server-ip>:8501
+#   docker compose --profile watch up -d      # zusaetzlich Ordnerueberwachung
+#                                             # (DOCLING_JOB=<job-id> setzen)
+#
+# Datenstrategie (effizient, ohne Hoch-/Runterladen):
+# Die Bind-Mounts unten zeigen auf ./data/*. Liegen die Daten auf einem NAS
+# oder anderen Host, das Share auf dem Docker-Host mounten und den Host-Pfad
+# hier eintragen, z. B.:
+#     - /mnt/nas/dokumente:/data/source
+#     - /mnt/nas/vault:/data/vault
+# SharePoint/OneDrive laesst sich per rclone in ./data/source synchronisieren,
+# Client-PCs per Syncthing oder Server-Freigabe. Details: README, Abschnitt
+# "Headless-Server & Docker".
+#
+# Sicherheit: Streamlit hat keine Authentifizierung. Nur im LAN/VPN betreiben
+# oder einen Reverse-Proxy mit Auth davorschalten.
+
+services:
+  dashboard:
+    build: .
+    image: docling-vault-tool
+    container_name: docling-vault-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data/source:/data/source
+      - ./data/vault:/data/vault
+      - ./data/archive:/data/archive
+      - docling-config:/data/config
+      - docling-models:/data/models
+    restart: unless-stopped
+
+  # Dauerhafte Ordnerueberwachung eines Jobs (Job vorher im Dashboard oder per
+  # `docker compose exec dashboard docling-vault-jobs add ...` anlegen).
+  watch:
+    profiles: ["watch"]
+    image: docling-vault-tool
+    container_name: docling-vault-watch
+    command: ["docling-vault-jobs", "watch", "${DOCLING_JOB:?DOCLING_JOB=<job-id> setzen}"]
+    volumes:
+      - ./data/source:/data/source
+      - ./data/vault:/data/vault
+      - ./data/archive:/data/archive
+      - docling-config:/data/config
+      - docling-models:/data/models
+    restart: unless-stopped
+
+volumes:
+  docling-config:
+  docling-models:

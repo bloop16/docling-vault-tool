@@ -809,6 +809,13 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         help="Kein YAML-Frontmatter voranstellen",
     )
     parser.add_argument(
+        "--build-vault",
+        action="store_true",
+        help="Nach der Konvertierung den Vault-Build ausfuehren: Notizen nach "
+        "Inbox/, Bilder nach Attachments/<notiz>/, Wikilinks, normiertes "
+        "Frontmatter (siehe vault_builder.py)",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -863,6 +870,9 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     for line in describe_plan(profile, config):
         print(f"  {line}")
     print(f"  Zu konvertieren: {total} Datei(en)")
+    if args.build_vault:
+        print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
+              "Wikilinks + Frontmatter")
     if not args.yes:
         try:
             answer = input("\nSo einordnen und starten? [j/N] ").strip().lower()
@@ -915,6 +925,20 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             encoding="utf-8",
         )
         print(f"Fehlerprotokoll: {args.error_log}")
+
+    if args.build_vault:
+        # Lazy-Import: der reine Convert-Modus bleibt ohne python-frontmatter
+        # lauffaehig.
+        import vault_builder
+
+        print("\n=== Vault-Build ===")
+        summary = vault_builder.build_vault(output_dir, output_dir)
+        print(f"  {summary.notes} Notiz(en) → Inbox/, "
+              f"{summary.images} Bild(er) → Attachments/.")
+        if summary.note_collisions or summary.image_collisions:
+            print(f"  Kollisionen aufgeloest: {summary.note_collisions} "
+                  f"Notiz(en), {summary.image_collisions} Bild(er).")
+
     return 1 if failed else 0
 
 
