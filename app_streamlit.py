@@ -29,7 +29,7 @@ import vault_builder as vb
 import vault_index as vi
 
 st.set_page_config(
-    page_title="Docling Vault Tool",
+    page_title="doc2vault",
     page_icon="🗂",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -236,7 +236,7 @@ def _render_failures(failures: list) -> None:
     st.download_button(
         "Fehlerprotokoll als CSV herunterladen",
         data=_errors_to_csv(failures),
-        file_name="docling_fehler.csv",
+        file_name="doc2vault_fehler.csv",
         mime="text/csv",
     )
 
@@ -248,7 +248,7 @@ st.markdown(
     """
     <div class="app-header">
       <div class="app-kicker">Batch-Konvertierung für Wissens-Vaults</div>
-      <h1>Docling Vault Tool</h1>
+      <h1>doc2vault</h1>
       <p>Konvertiert PDF-, Word-, Excel- und PowerPoint-Dokumente in strukturiertes
       Markdown für Obsidian-kompatible Vaults. Überschriften und Tabellen bleiben
       erhalten, eingebettete Bilder werden extrahiert, jede Notiz erhält Metadaten
@@ -264,11 +264,11 @@ st.markdown(
 with st.sidebar:
     st.markdown('<div class="side-label">Verzeichnisse</div>', unsafe_allow_html=True)
     # Vorbelegung aus Umgebungsvariablen: im Container zeigen die Felder damit
-    # direkt auf die gemounteten Ordner (docker-compose setzt DOCLING_*_DIR).
+    # direkt auf die gemounteten Ordner (docker-compose setzt DOC2VAULT_*_DIR).
     input_dir = st.text_input(
         "Quellordner",
         value=st.session_state.get(
-            "input_dir", os.environ.get("DOCLING_SOURCE_DIR", "")
+            "input_dir", os.environ.get("DOC2VAULT_SOURCE_DIR", "")
         ),
         placeholder="/pfad/zu/den/dokumenten",
         help="Wird rekursiv nach unterstützten Dateien durchsucht.",
@@ -276,7 +276,7 @@ with st.sidebar:
     output_dir = st.text_input(
         "Ziel-Vault-Ordner",
         value=st.session_state.get(
-            "output_dir", os.environ.get("DOCLING_TARGET_DIR", "")
+            "output_dir", os.environ.get("DOC2VAULT_TARGET_DIR", "")
         ),
         placeholder="/pfad/zum/vault",
         help="Zielordner für die Markdown-Dateien. Bestehende Vaults werden "
@@ -370,7 +370,7 @@ with st.sidebar:
         archive_dir = st.text_input(
             "Archiv-Ordner",
             value=st.session_state.get(
-                "archive_dir", os.environ.get("DOCLING_ARCHIVE_DIR", "")
+                "archive_dir", os.environ.get("DOC2VAULT_ARCHIVE_DIR", "")
             ),
             placeholder="/pfad/zum/archiv",
             help="Die Struktur des Quellordners wird im Archiv gespiegelt.",
@@ -866,7 +866,7 @@ with tab_jobs:
                     st.caption("Noch keine Läufe protokolliert.")
 
             st.caption("Dauerhafte Überwachung (eigener Prozess oder Dienst):")
-            st.code(f"python job_manager.py watch {j.id}", language="bash")
+            st.code(f"doc2vault-jobs watch {j.id}", language="bash")
 
 # ===========================================================================
 # Tab 3: Suche & KI (Such-Index, Ollama-Embeddings und -Tagging)
@@ -971,9 +971,9 @@ with tab_search:
             "Ollama-URL",
             value=st.session_state.get(
                 "ollama_url",
-                os.environ.get("DOCLING_OLLAMA_URL", vi.DEFAULT_OLLAMA_URL),
+                os.environ.get("DOC2VAULT_OLLAMA_URL", vi.DEFAULT_OLLAMA_URL),
             ),
-            help="Auch per Umgebungsvariable DOCLING_OLLAMA_URL setzbar.",
+            help="Auch per Umgebungsvariable DOC2VAULT_OLLAMA_URL setzbar.",
         )
         st.session_state["ollama_url"] = ollama_url
         c_col.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
@@ -996,7 +996,7 @@ with tab_search:
         else:
             def _default_idx(candidates: list[str], want_embed: bool) -> int:
                 env = os.environ.get(
-                    "DOCLING_EMBED_MODEL" if want_embed else "DOCLING_TAG_MODEL"
+                    "DOC2VAULT_EMBED_MODEL" if want_embed else "DOC2VAULT_TAG_MODEL"
                 )
                 for i, name in enumerate(candidates):
                     if env and name.startswith(env):

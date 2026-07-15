@@ -18,10 +18,10 @@ Obsidian-Vault fehlen danach noch:
 Nutzung::
 
     # integriert (nach der Konvertierung):
-    docling-vault -i <quelle> -o <vault> --build-vault
+    doc2vault -i <quelle> -o <vault> --build-vault
 
     # standalone auf einen bestehenden Docling-Output-Ordner:
-    docling-vault-build --input <docling-output> --vault <zielvault>
+    doc2vault-build --input <docling-output> --vault <zielvault>
 
 Der Builder ist idempotent: liegt der Output-Ordner im Ziel-Vault (oder ist
 identisch mit ihm), werden ``Inbox/`` und ``Attachments/`` beim Scan
@@ -316,7 +316,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
 
 
 def main() -> int:
-    """Einstiegspunkt fuer den ``docling-vault-build``-Konsolenbefehl."""
+    """Einstiegspunkt fuer den ``doc2vault-build``-Konsolenbefehl."""
     return _run_cli()
 
 

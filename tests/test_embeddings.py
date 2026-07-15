@@ -138,7 +138,7 @@ def test_resolve_model_lists_available():
 
 
 def test_cli_models_against_dead_host(capsys, monkeypatch):
-    monkeypatch.setenv("DOCLING_OLLAMA_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("DOC2VAULT_OLLAMA_URL", "http://127.0.0.1:1")
     rc = vi._run_cli(["models"])
     assert rc == 2
     assert "nicht erreichbar" in capsys.readouterr().err

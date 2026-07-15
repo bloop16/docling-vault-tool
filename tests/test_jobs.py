@@ -297,6 +297,30 @@ def test_job_build_error_does_not_fail_run(jobs_home, tmp_path, monkeypatch):
     assert "build_error" in jm.load_history(job.id)[-1]
 
 
+def test_config_dir_migrates_legacy_folder(tmp_path, monkeypatch):
+    """Daten der frueheren Installation (docling-vault-tool) werden uebernommen."""
+    parent = tmp_path / "confroot"
+    legacy = parent / "docling-vault-tool"
+    (legacy / "manifests").mkdir(parents=True)
+    (legacy / "jobs.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.delenv("DOC2VAULT_HOME", raising=False)
+    monkeypatch.delenv("DOCLING_VAULT_HOME", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(parent))
+    monkeypatch.setattr(jm.sys, "platform", "linux")
+
+    base = jm.config_dir()
+    assert base == parent / "doc2vault"
+    assert (base / "jobs.json").exists()      # Daten uebernommen
+    assert not legacy.exists()                # alter Ordner umbenannt
+
+
+def test_config_dir_accepts_legacy_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("DOC2VAULT_HOME", raising=False)
+    monkeypatch.setenv("DOCLING_VAULT_HOME", str(tmp_path / "alt"))
+    assert jm.config_dir() == tmp_path / "alt"
+
+
 def test_remove_job_cleans_all_state(job_env):
     src, target, job = job_env
     jm.run_job(job, convert_batch=_fake_batch_factory([]))

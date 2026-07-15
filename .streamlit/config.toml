@@ -1,4 +1,4 @@
-# Theme fuer das Docling Vault Tool: dunkel, nuechtern, eine Akzentfarbe.
+# Theme fuer das doc2vault: dunkel, nuechtern, eine Akzentfarbe.
 # Feinschliff (Typografie, Abstaende) per CSS in app_streamlit.py.
 [theme]
 base = "dark"

@@ -1,4 +1,4 @@
-"""Einstiegspunkt fuer den ``docling-vault-ui``-Konsolenbefehl.
+"""Einstiegspunkt fuer den ``doc2vault-ui``-Konsolenbefehl.
 
 Startet das Streamlit-Dashboard aus der installierten Paketumgebung. Da die
 ``.streamlit/config.toml`` des Repos bei einer Paketinstallation nicht im

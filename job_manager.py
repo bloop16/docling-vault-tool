@@ -18,7 +18,7 @@ Sicherheitsmerkmale ("sichere Jobs"):
   irgendetwas geschrieben wird.
 
 Konfiguration/Status liegen pro Nutzer unter einem Konfigverzeichnis
-(``DOCLING_VAULT_HOME`` oder OS-Standard), sodass das Tool nutzerunabhaengig ist.
+(``DOC2VAULT_HOME`` oder OS-Standard), sodass das Tool nutzerunabhaengig ist.
 
 CLI::
 
@@ -59,18 +59,33 @@ _CONFIG_FIELDS = (
 # ---------------------------------------------------------------------------
 
 def config_dir() -> Path:
-    """Konfig-/Statusverzeichnis (``DOCLING_VAULT_HOME`` oder OS-Standard)."""
-    env = os.environ.get("DOCLING_VAULT_HOME")
+    """Konfig-/Statusverzeichnis (``DOC2VAULT_HOME`` oder OS-Standard).
+
+    Bestehende Daten der frueheren Installation ("docling-vault-tool",
+    inkl. der alten Variable ``DOCLING_VAULT_HOME``) werden beim ersten
+    Zugriff automatisch uebernommen -- Jobs, Manifeste und Verlaeufe gehen
+    durch die Umbenennung nicht verloren.
+    """
+    env = os.environ.get("DOC2VAULT_HOME") or os.environ.get("DOCLING_VAULT_HOME")
     if env:
         base = Path(env)
     elif sys.platform.startswith("win"):
-        base = Path(os.environ.get("APPDATA", Path.home())) / "docling-vault-tool"
+        base = Path(os.environ.get("APPDATA", Path.home())) / "doc2vault"
     elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "docling-vault-tool"
+        base = Path.home() / "Library" / "Application Support" / "doc2vault"
     else:
         base = Path(
             os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-        ) / "docling-vault-tool"
+        ) / "doc2vault"
+
+    if not base.exists():
+        legacy = base.parent / "docling-vault-tool"
+        if legacy.is_dir():
+            try:
+                legacy.rename(base)
+            except OSError:
+                pass  # z. B. anderes Dateisystem -- dann frisch starten
+
     base.mkdir(parents=True, exist_ok=True)
     (base / "manifests").mkdir(exist_ok=True)
     return base
@@ -877,7 +892,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
 
 
 def main() -> int:
-    """Einstiegspunkt fuer den ``docling-vault-jobs``-Konsolenbefehl."""
+    """Einstiegspunkt fuer den ``doc2vault-jobs``-Konsolenbefehl."""
     return _run_cli()
 
 
