@@ -930,6 +930,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         # Lazy-Import: der reine Convert-Modus bleibt ohne python-frontmatter
         # lauffaehig.
         import vault_builder
+        import vault_index
 
         print("\n=== Vault-Build ===")
         summary = vault_builder.build_vault(output_dir, output_dir)
@@ -938,6 +939,11 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         if summary.note_collisions or summary.image_collisions:
             print(f"  Kollisionen aufgeloest: {summary.note_collisions} "
                   f"Notiz(en), {summary.image_collisions} Bild(er).")
+
+        idx = vault_index.update_index(output_dir)
+        vault_index.write_index_md(output_dir)
+        print(f"  Such-Index: {idx.indexed} neu/geändert, "
+              f"{idx.total} Notizen insgesamt (INDEX.md aktualisiert).")
 
     return 1 if failed else 0
 

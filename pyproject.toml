@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docling-vault-tool"
-version = "0.3.0"
+version = "0.4.0"
 description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in strukturierte Markdown-Vaults mit Docling"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,9 +25,10 @@ docling-vault = "docling_worker:main"
 docling-vault-jobs = "job_manager:main"
 docling-vault-ui = "dashboard_launcher:main"
 docling-vault-build = "vault_builder:main"
+docling-vault-index = "vault_index:main"
 
 [tool.setuptools]
-py-modules = ["docling_worker", "job_manager", "app_streamlit", "dashboard_launcher", "file_transfer", "vault_builder"]
+py-modules = ["docling_worker", "job_manager", "app_streamlit", "dashboard_launcher", "file_transfer", "vault_builder", "vault_index"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
