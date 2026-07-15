@@ -718,12 +718,22 @@ with tab_jobs:
                 min_value=5, value=30, step=5,
                 key="new_job_poll",
             )
+            job_build = st.toggle(
+                "Vault-Build + Such-Index nach jedem Lauf",
+                value=st.session_state.get("build_after", False),
+                key="new_job_build",
+                help="Nach jedem Lauf mit Neukonvertierungen: Notizen nach "
+                "Inbox/, Bilder nach Attachments/ mit Wikilinks, Index und "
+                "INDEX.md aktualisieren. Die Watch-Pipeline liefert damit "
+                "direkt den fertigen, durchsuchbaren Vault.",
+            )
             for line in dw.describe_plan(profile, config):
                 st.caption(f"– {line}")
             if st.button("Job speichern", key="save_job"):
                 new_job = jm.add_job(
                     job_name, input_dir, output_dir, config,
                     poll_interval=int(poll), max_workers=max_workers,
+                    build_vault=job_build,
                 )
                 st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
 
@@ -777,12 +787,23 @@ with tab_jobs:
                 else:
                     run_bar.progress(1.0)
                     if summary.converted_ok or summary.converted_failed:
-                        st.success(
+                        msg = (
                             f"{summary.converted_ok} konvertiert, "
                             f"{summary.converted_failed} Fehler "
                             f"(neu: {summary.changes['neu']}, "
                             f"geändert: {summary.changes['geaendert']})."
                         )
+                        if summary.build_notes is not None:
+                            msg += (
+                                f" Vault-Build: {summary.build_notes} → Inbox/, "
+                                f"Index: {summary.index_total} Notizen."
+                            )
+                        st.success(msg)
+                        if summary.build_error:
+                            st.warning(
+                                f"Vault-Build fehlgeschlagen: "
+                                f"{summary.build_error}"
+                            )
                     else:
                         st.info("Keine neuen oder geänderten Dateien.")
 
@@ -794,6 +815,7 @@ with tab_jobs:
                 f"Bereits konvertiert: {done_n} · "
                 f"Letzter Lauf: {job_fresh.last_run_at or '–'} · "
                 f"Watch-Intervall: {j.poll_interval}s"
+                + (" · Vault-Build + Index: aktiv" if j.build_vault else "")
             )
 
             pending = st.session_state.get(f"check_{j.id}")
@@ -806,6 +828,15 @@ with tab_jobs:
             history = jm.load_history(j.id)
             with st.expander(f"Verlauf ({len(history)} Läufe)"):
                 if history:
+                    def _build_cell(rec: dict) -> str:
+                        if rec.get("build_error"):
+                            return "Fehler"
+                        build = rec.get("build")
+                        if build:
+                            return (f"{build.get('notes', 0)} → Inbox "
+                                    f"(Index {build.get('index_total', 0)})")
+                        return "–"
+
                     hist_rows = [
                         {
                             "Zeitpunkt": rec.get("started_at", "–"),
@@ -814,6 +845,7 @@ with tab_jobs:
                             "Geändert": rec.get("changes", {}).get("geaendert", 0),
                             "Konvertiert": rec.get("converted_ok", 0),
                             "Fehler": rec.get("converted_failed", 0),
+                            "Build": _build_cell(rec),
                             "Dauer (s)": rec.get("duration_s", 0),
                         }
                         for rec in reversed(history)

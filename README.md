@@ -377,6 +377,16 @@ OS-Standard (`~/.config/docling-vault-tool`, `%APPDATA%`, `~/Library/…`).
 anlegen, „Prüfen" (Dry-Run), „Ausführen" (inkrementell), löschen; der
 Watch-Befehl wird pro Job angezeigt.
 
+**Vault-Build + Index je Job:** Mit der Job-Option *Vault-Build + Such-Index
+nach jedem Lauf* (Dashboard-Toggle beim Anlegen bzw. CLI-Flag `--build-vault`)
+führt jeder Lauf mit Neukonvertierungen automatisch den Vault-Build und die
+Index-Aktualisierung aus — die Überwachung liefert damit direkt den fertigen,
+durchsuchbaren Vault: Datei landet im Eingangsordner → Notiz erscheint in
+`Inbox/` mit Wikilinks und aktualisiertem `INDEX.md`. Bestehende Notizen des
+Vaults bleiben unangetastet; Build-Fehler brechen den Lauf nicht ab und
+stehen im Verlauf. Leerzyklen der Überwachung bleiben billig (kein Build ohne
+Neukonvertierung).
+
 **Lauf-Historie:** Jeder Lauf mit tatsächlicher Arbeit wird protokolliert
 (Zeitpunkt, Auslöser wie `cli`/`dashboard`/`watch`, Anzahl neu/geändert,
 Erfolge, Fehler samt Datei und Grund, Dauer). Einsehbar im Dashboard je Job
@@ -387,7 +397,8 @@ werden die letzten 200 Läufe pro Job.
 **CLI:**
 
 ```bash
-python job_manager.py add     --name "Berichte" --source SRC --target VAULT
+python job_manager.py add     --name "Berichte" --source SRC --target VAULT \
+                              --build-vault   # optional: fertiger Vault je Lauf
 python job_manager.py list
 python job_manager.py plan    Berichte        # Dry-Run: was würde passieren?
 python job_manager.py run     Berichte        # inkrementell konvertieren

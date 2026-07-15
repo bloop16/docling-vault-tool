@@ -229,6 +229,74 @@ def test_watch_event_mode_wakes_on_change(job_env):
     assert Path(log[-1]).name == "neu.pdf"
 
 
+def _writing_batch_factory():
+    """Batch-Ersatz, der echte .md-Dateien ins Ziel schreibt (fuer Build-Tests)."""
+
+    def batch(files, job, max_workers, progress):
+        results = []
+        target = Path(job.target)
+        target.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            out = target / (Path(f).stem + ".md")
+            out.write_text(f"# {Path(f).stem}\n\nInhalt aus {Path(f).name}.\n",
+                           encoding="utf-8")
+            results.append(dw.ConversionResult(
+                source_path=f, success=True, output_path=str(out)))
+        return results
+
+    return batch
+
+
+def test_job_build_vault_and_index(jobs_home, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "bericht.pdf").write_text("x")
+    target = tmp_path / "vault"
+
+    job = jm.add_job("Pipeline", str(src), str(target), dw.ConverterConfig(),
+                     build_vault=True)
+    assert jm.get_job(job.id).build_vault is True
+
+    summary = jm.run_job(job, convert_batch=_writing_batch_factory())
+    assert summary.converted_ok == 1
+    assert summary.build_notes == 1
+    assert summary.index_total == 1
+    assert summary.build_error is None
+
+    # Fertiger Vault: Notiz in Inbox/, Index + INDEX.md vorhanden.
+    assert (target / "Inbox" / "bericht.md").exists()
+    assert (target / ".vault-index" / "index.db").exists()
+    assert (target / "INDEX.md").exists()
+
+    # Historie enthaelt den Build-Schritt.
+    rec = jm.load_history(job.id)[-1]
+    assert rec["build"] == {"notes": 1, "images": 0, "index_total": 1}
+
+    # Leerlauf: kein erneuter Build (build_notes bleibt None).
+    summary2 = jm.run_job(job, convert_batch=_writing_batch_factory())
+    assert summary2.converted_ok == 0
+    assert summary2.build_notes is None
+
+
+def test_job_build_error_does_not_fail_run(jobs_home, tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_text("x")
+    job = jm.add_job("Kaputt", str(src), str(tmp_path / "vault"),
+                     dw.ConverterConfig(), build_vault=True)
+
+    import vault_builder
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("build kaputt")
+
+    monkeypatch.setattr(vault_builder, "build_vault", boom)
+    summary = jm.run_job(job, convert_batch=_writing_batch_factory())
+    assert summary.converted_ok == 1          # Konvertierung bleibt erfolgreich
+    assert "build kaputt" in summary.build_error
+    assert "build_error" in jm.load_history(job.id)[-1]
+
+
 def test_remove_job_cleans_all_state(job_env):
     src, target, job = job_env
     jm.run_job(job, convert_batch=_fake_batch_factory([]))

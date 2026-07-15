@@ -109,6 +109,9 @@ class Job:
     max_workers: Optional[int] = None
     created_at: str = ""
     last_run_at: Optional[str] = None
+    # Nach jedem Lauf mit Neukonvertierungen zusaetzlich Vault-Build
+    # (Inbox/, Attachments/, Wikilinks) + Such-Index ausfuehren.
+    build_vault: bool = False
 
     def converter_config(self) -> dw.ConverterConfig:
         """Rekonstruiert die ``ConverterConfig`` aus dem gespeicherten Plan."""
@@ -154,6 +157,11 @@ class JobRunSummary:
     failures: list = field(default_factory=list)
     dry_run: bool = False
     skipped_locked: bool = False
+    # Ergebnis des optionalen Vault-Build-/Index-Schritts (job.build_vault):
+    build_notes: Optional[int] = None
+    build_images: Optional[int] = None
+    index_total: Optional[int] = None
+    build_error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +211,7 @@ def add_job(
     config: Optional[dw.ConverterConfig] = None,
     poll_interval: int = 30,
     max_workers: Optional[int] = None,
+    build_vault: bool = False,
 ) -> Job:
     """Legt einen Job an. Ist keine Config angegeben, wird sie aus dem Ziel
     (``analyze_vault`` -> ``recommend_config``) empfohlen."""
@@ -223,6 +232,7 @@ def add_job(
         target=str(Path(target).resolve()),
         config=cfg_dict, poll_interval=poll_interval, max_workers=max_workers,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        build_vault=build_vault,
     )
     jobs.append(job)
     save_jobs(jobs)
@@ -516,7 +526,30 @@ def run_job(
         duration_s=time.perf_counter() - t0, changes=changes.counts(),
         converted_ok=ok, converted_failed=failed, failures=failures,
     )
-    _append_history(job.id, {
+
+    # Optionaler Vault-Build + Such-Index -- nur wenn tatsaechlich etwas
+    # konvertiert wurde (der Watch-Modus soll Leerzyklen billig halten).
+    # Fehler hier brechen den Job-Lauf nicht ab, sie werden protokolliert.
+    if job.build_vault and ok:
+        try:
+            import vault_builder
+            import vault_index
+
+            cfg = job.converter_config()
+            target = Path(job.target)
+            build_source = (
+                target / cfg.notes_subdir if cfg.notes_subdir else target
+            )
+            bsum = vault_builder.build_vault(build_source, target)
+            isum = vault_index.update_index(target)
+            vault_index.write_index_md(target)
+            summary.build_notes = bsum.notes
+            summary.build_images = bsum.images
+            summary.index_total = isum.total
+        except Exception as exc:  # noqa: BLE001 -- Lauf bleibt erfolgreich
+            summary.build_error = f"{type(exc).__name__}: {exc}"
+
+    record = {
         "started_at": summary.started_at,
         "trigger": trigger,
         "duration_s": round(summary.duration_s, 2),
@@ -527,7 +560,16 @@ def run_job(
             {"file": f.source_path, "error": f.error, "category": f.error_category}
             for f in failures[:25]
         ],
-    })
+    }
+    if summary.build_notes is not None:
+        record["build"] = {
+            "notes": summary.build_notes,
+            "images": summary.build_images,
+            "index_total": summary.index_total,
+        }
+    if summary.build_error:
+        record["build_error"] = summary.build_error
+    _append_history(job.id, record)
     return summary
 
 
@@ -639,6 +681,13 @@ def _print_summary(job: Job, s: JobRunSummary) -> None:
     if not s.dry_run:
         print(f"  Konvertiert: ok={s.converted_ok} fehler={s.converted_failed} "
               f"in {s.duration_s:.1f}s")
+    if s.build_notes is not None:
+        print(f"  Vault-Build: {s.build_notes} Notiz(en) → Inbox/, "
+              f"{s.build_images} Bild(er) → Attachments/ · "
+              f"Index: {s.index_total} Notizen")
+    if s.build_error:
+        print(f"  WARNUNG Vault-Build fehlgeschlagen: {s.build_error}",
+              file=sys.stderr)
 
 
 def _run_cli(argv: Optional[list[str]] = None) -> int:
@@ -670,6 +719,9 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_add.add_argument("--notes-subdir", default=None)
     p_add.add_argument("--attachments-subdir", default=None)
     p_add.add_argument("--no-frontmatter", action="store_true")
+    p_add.add_argument("--build-vault", action="store_true",
+                       help="Nach jedem Lauf mit Neukonvertierungen Vault-Build "
+                       "(Inbox/Attachments/Wikilinks) + Such-Index ausfuehren")
 
     sub.add_parser("list", help="Jobs auflisten")
     for name, helptext in (("plan", "Dry-Run: anstehende Aenderungen zeigen"),
@@ -721,7 +773,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         if args.no_frontmatter:
             config.add_frontmatter = False
         job = add_job(args.name, args.source, args.target, config,
-                      poll_interval=args.poll_interval, max_workers=args.workers)
+                      poll_interval=args.poll_interval, max_workers=args.workers,
+                      build_vault=args.build_vault)
         print(f"Job angelegt: {job.id}")
         print("Integrationsplan:")
         for line in dw.describe_plan(profile, config):
@@ -738,7 +791,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             done = sum(1 for e in m.values() if e.get("status") == "ok")
             print(f"  {j.id:24s} {j.name}")
             print(f"    {j.source}  ->  {j.target}")
-            print(f"    konvertiert: {done}  letzter Lauf: {j.last_run_at or '-'}")
+            print(f"    konvertiert: {done}  letzter Lauf: {j.last_run_at or '-'}"
+                  + ("  [Vault-Build+Index]" if j.build_vault else ""))
         return 0
 
     if args.cmd in ("plan", "run", "show", "rm", "watch", "history"):
@@ -805,8 +859,14 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             def _cycle(s: JobRunSummary):
                 if s.converted_ok or s.converted_failed:
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    extra = ""
+                    if s.build_notes is not None:
+                        extra = (f", Build: {s.build_notes} → Inbox/, "
+                                 f"Index: {s.index_total}")
+                    if s.build_error:
+                        extra += f", BUILD-FEHLER: {s.build_error}"
                     print(f"  [{ts}] +{s.converted_ok} konvertiert, "
-                          f"{s.converted_failed} Fehler", flush=True)
+                          f"{s.converted_failed} Fehler{extra}", flush=True)
             try:
                 watch_job(job, on_cycle=_cycle, use_events=use_events)
             except KeyboardInterrupt:
