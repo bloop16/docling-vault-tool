@@ -17,10 +17,19 @@ keine externe Datenbank, kein Server:
 Der Index wird inkrementell gepflegt (Content-Hash je Notiz); bei jedem
 ``--build-vault``-Lauf laeuft die Aktualisierung automatisch mit.
 
+Optional (additiv, keine Hard-Dependency): semantische Suche via Ollama-
+Embeddings -- Notizen werden heading-basiert in Chunks gesplittet, Embeddings
+liegen als Float32-BLOBs in derselben ``index.db``, die Aehnlichkeitssuche
+laeuft mit numpy (Cosine) direkt in Python. Ist Ollama nicht erreichbar,
+laufen Vault-Build und FTS5-Index trotzdem vollstaendig durch.
+
 CLI::
 
-    docling-vault-index update --vault <vault>
-    docling-vault-index query  --vault <vault> "suchbegriff"
+    docling-vault-index update  --vault <vault>
+    docling-vault-index query   --vault <vault> "suchbegriff"
+    docling-vault-index models  [--ollama-url http://host:11434]
+    docling-vault-index embed   --vault <vault> --model nomic-embed-text
+    docling-vault-index similar --vault <vault> "frage" [-n 5]
 """
 
 from __future__ import annotations
@@ -226,20 +235,309 @@ def update_index(vault_dir: os.PathLike | str) -> IndexSummary:
 def query_index(
     vault_dir: os.PathLike | str, term: str, limit: int = 10
 ) -> list[dict]:
-    """FTS5-Suche ueber alle Spalten (inkl. Volltext) mit Treffer-Snippet."""
+    """FTS5-Suche ueber alle Spalten (inkl. Volltext) mit Treffer-Snippet.
+
+    FTS5-Syntax (AND/OR/NEAR, Spaltenfilter) wird durchgereicht; ist der
+    Begriff keine gueltige FTS5-Query (z. B. "Solar-Module" -- Bindestrich
+    ist ein Operator), wird er automatisch als Phrase gequotet.
+    """
+    sql = ("SELECT path, title, tags, "
+           "snippet(notes, 5, '»', '«', ' … ', 12) AS snippet "
+           "FROM notes WHERE notes MATCH ? ORDER BY rank LIMIT ?")
     conn = open_db(vault_dir)
     try:
-        rows = conn.execute(
-            "SELECT path, title, tags, "
-            "snippet(notes, 5, '»', '«', ' … ', 12) AS snippet "
-            "FROM notes WHERE notes MATCH ? ORDER BY rank LIMIT ?",
-            (term, limit),
-        ).fetchall()
+        try:
+            rows = conn.execute(sql, (term, limit)).fetchall()
+        except sqlite3.OperationalError:
+            phrase = '"' + term.replace('"', '""') + '"'
+            rows = conn.execute(sql, (phrase, limit)).fetchall()
     finally:
         conn.close()
     return [
         {"path": r[0], "title": r[1], "tags": r[2], "snippet": r[3]}
         for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Ollama-Anbindung (optional, fuer Embeddings und Tagging)
+# ---------------------------------------------------------------------------
+
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+
+
+class OllamaError(RuntimeError):
+    """Ollama nicht erreichbar oder Antwort unbrauchbar."""
+
+
+class OllamaClient:
+    """Minimaler Ollama-HTTP-Client (Stdlib urllib, Timeout + Retry).
+
+    ``base_url`` kommt aus dem CLI-Flag bzw. ``DOCLING_OLLAMA_URL``.
+    In Tests wird der Client durch ein Fake-Objekt mit derselben Schnittstelle
+    ersetzt (``list_models``/``embed``/``generate``).
+    """
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        timeout: float = 60.0,
+        retries: int = 2,
+    ) -> None:
+        self.base_url = (
+            base_url or os.environ.get("DOCLING_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+        ).rstrip("/")
+        self.timeout = timeout
+        self.retries = retries
+
+    def _request(self, path: str, payload: Optional[dict] = None) -> dict:
+        import urllib.error
+        import urllib.request
+
+        url = f"{self.base_url}{path}"
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        last_error: Exception | None = None
+        for _ in range(self.retries + 1):
+            try:
+                req = urllib.request.Request(
+                    url, data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST" if data is not None else "GET",
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                last_error = exc
+        raise OllamaError(
+            f"Ollama unter {self.base_url} nicht erreichbar: {last_error}"
+        )
+
+    def list_models(self) -> list[str]:
+        data = self._request("/api/tags")
+        return [m.get("name", "") for m in data.get("models", [])]
+
+    def embed(self, model: str, text: str) -> list[float]:
+        data = self._request("/api/embeddings", {"model": model, "prompt": text})
+        embedding = data.get("embedding")
+        if not embedding:
+            raise OllamaError(f"Leeres Embedding von Modell {model!r}.")
+        return embedding
+
+    def generate(self, model: str, prompt: str) -> str:
+        data = self._request(
+            "/api/generate", {"model": model, "prompt": prompt, "stream": False}
+        )
+        return str(data.get("response", ""))
+
+
+def _resolve_model(
+    client, model: Optional[str], env_var: str, purpose: str
+) -> str:
+    """Modellnamen aus Flag/ENV aufloesen; sonst verfuegbare Modelle anzeigen.
+
+    Die Modellwahl passiert bewusst erst NACH erfolgreicher Verbindung --
+    die Liste kommt live aus ``/api/tags``.
+    """
+    resolved = model or os.environ.get(env_var)
+    available = client.list_models()
+    if resolved:
+        return resolved
+    listing = "\n".join(f"  - {m}" for m in available) or "  (keine Modelle)"
+    raise OllamaError(
+        f"Kein Modell fuer {purpose} angegeben. Verfuegbar auf dem Server:\n"
+        f"{listing}\nAuswahl per --model bzw. {env_var}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chunking + Embeddings
+# ---------------------------------------------------------------------------
+
+_HEADING = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
+
+
+def split_chunks(
+    content: str, max_chars: int = 1500, overlap: int = 200
+) -> list[tuple[str, str]]:
+    """Splittet eine Notiz in ``(heading, text)``-Chunks.
+
+    Primaer an Markdown-Headings (das Heading gibt jedem Chunk Kontext);
+    ueberlange Abschnitte werden zusaetzlich als Sliding-Window mit Overlap
+    geteilt -- eine ganze Docling-Konvertierung als EIN Vektor waere fuer
+    Aehnlichkeitssuche zu grob.
+    """
+    sections: list[tuple[str, str]] = []
+    matches = list(_HEADING.finditer(content))
+    if not matches:
+        sections.append(("", content.strip()))
+    else:
+        preamble = content[: matches[0].start()].strip()
+        if preamble:
+            sections.append(("", preamble))
+        for i, m in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            body = content[m.end():end].strip()
+            if body:
+                sections.append((m.group(2).strip(), body))
+
+    chunks: list[tuple[str, str]] = []
+    for heading, text in sections:
+        if len(text) <= max_chars:
+            chunks.append((heading, text))
+            continue
+        step = max_chars - overlap
+        for start in range(0, len(text), step):
+            window = text[start:start + max_chars]
+            if window.strip():
+                chunks.append((heading, window))
+            if start + max_chars >= len(text):
+                break
+    return chunks
+
+
+def _to_blob(vector: list[float]) -> bytes:
+    import numpy as np
+
+    return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def _from_blob(blob: bytes):
+    import numpy as np
+
+    return np.frombuffer(blob, dtype=np.float32)
+
+
+@dataclass
+class EmbedSummary:
+    """Ergebnis eines Embedding-Laufs."""
+
+    notes: int = 0
+    chunks_embedded: int = 0
+    chunks_reused: int = 0
+    model: str = ""
+    dimension: int = 0
+
+
+def embed_vault(
+    vault_dir: os.PathLike | str,
+    client,
+    model: str,
+) -> EmbedSummary:
+    """Berechnet Embeddings fuer alle Notiz-Chunks (sequenziell, idempotent).
+
+    Pro Chunk wird der ``text_hash`` geprueft -- vorhandene Embeddings mit
+    gleichem Hash werden wiederverwendet, nur Neues geht an Ollama. Ein
+    Modellwechsel (``index_meta.embed_model``) invalidiert alle Embeddings.
+    Die Embedding-Dimension wird beim ersten Call ermittelt und gespeichert,
+    nicht hartcodiert.
+    """
+    vault = Path(vault_dir)
+    conn = open_db(vault)
+    summary = EmbedSummary(model=model)
+    try:
+        prev_model = conn.execute(
+            "SELECT value FROM index_meta WHERE key='embed_model'"
+        ).fetchone()
+        if prev_model and prev_model[0] != model:
+            conn.execute("UPDATE chunks SET embedding = NULL")
+
+        # Dimension per Test-Call ermitteln (und Verbindung verifizieren).
+        probe = client.embed(model, "dimension probe")
+        summary.dimension = len(probe)
+
+        note_paths = [r[0] for r in conn.execute("SELECT path FROM note_meta")]
+        for rel in note_paths:
+            md_path = vault / rel
+            if not md_path.is_file():
+                continue
+            content = frontmatter.load(md_path).content
+            chunks = split_chunks(content)
+
+            # Vorhandene Embeddings nach text_hash fuer Wiederverwendung.
+            existing = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    "SELECT text_hash, embedding FROM chunks "
+                    "WHERE path = ? AND embedding IS NOT NULL", (rel,)
+                )
+            }
+            conn.execute("DELETE FROM chunks WHERE path = ?", (rel,))
+            for idx, (heading, text) in enumerate(chunks):
+                text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                blob = existing.get(text_hash)
+                if blob is not None:
+                    summary.chunks_reused += 1
+                else:
+                    blob = _to_blob(client.embed(model, text))
+                    summary.chunks_embedded += 1
+                conn.execute(
+                    "INSERT INTO chunks(path, chunk_index, heading, text, "
+                    "text_hash, embedding) VALUES(?, ?, ?, ?, ?, ?)",
+                    (rel, idx, heading, text, text_hash, blob),
+                )
+            summary.notes += 1
+            conn.commit()   # pro Notiz committen -- Abbruch verliert wenig
+
+        conn.execute(
+            "INSERT INTO index_meta(key, value) VALUES('embed_model', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (model,)
+        )
+        conn.execute(
+            "INSERT INTO index_meta(key, value) VALUES('embed_dim', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(summary.dimension),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return summary
+
+
+def similar(
+    vault_dir: os.PathLike | str,
+    query: str,
+    client,
+    model: Optional[str] = None,
+    top_k: int = 5,
+) -> list[dict]:
+    """Semantische Suche: Cosine-Similarity (numpy) ueber alle Chunk-Embeddings."""
+    import numpy as np
+
+    conn = open_db(vault_dir)
+    try:
+        stored_model = conn.execute(
+            "SELECT value FROM index_meta WHERE key='embed_model'"
+        ).fetchone()
+        if not stored_model:
+            raise OllamaError(
+                "Noch keine Embeddings vorhanden -- zuerst "
+                "'docling-vault-index embed --model …' ausfuehren."
+            )
+        model = model or stored_model[0]
+        rows = conn.execute(
+            "SELECT path, heading, text, embedding FROM chunks "
+            "WHERE embedding IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return []
+
+    query_vec = np.asarray(client.embed(model, query), dtype=np.float32)
+    matrix = np.vstack([_from_blob(r[3]) for r in rows])
+    norms = np.linalg.norm(matrix, axis=1) * (np.linalg.norm(query_vec) or 1.0)
+    norms[norms == 0] = 1.0
+    scores = matrix @ query_vec / norms
+
+    order = np.argsort(scores)[::-1][:top_k]
+    return [
+        {
+            "path": rows[i][0],
+            "heading": rows[i][1],
+            "text": rows[i][2][:200],
+            "score": float(scores[i]),
+        }
+        for i in order
     ]
 
 
@@ -310,7 +608,44 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_query.add_argument("term", help="Suchbegriff (FTS5-Syntax erlaubt)")
     p_query.add_argument("-n", "--limit", type=int, default=10)
 
+    p_models = sub.add_parser(
+        "models", help="Verfuegbare Ollama-Modelle anzeigen (/api/tags)"
+    )
+    p_models.add_argument("--ollama-url", default=None,
+                          help=f"Ollama-URL (ENV DOCLING_OLLAMA_URL, "
+                          f"Default {DEFAULT_OLLAMA_URL})")
+
+    p_embed = sub.add_parser(
+        "embed", help="Embeddings fuer alle Notiz-Chunks berechnen (Ollama)"
+    )
+    p_embed.add_argument("--vault", "-o", required=True, help="Vault-Ordner")
+    p_embed.add_argument("--model", "-m", default=None,
+                         help="Embedding-Modell (ENV DOCLING_EMBED_MODEL)")
+    p_embed.add_argument("--ollama-url", default=None)
+
+    p_similar = sub.add_parser(
+        "similar", help="Semantische Suche ueber die Embeddings"
+    )
+    p_similar.add_argument("--vault", "-o", required=True, help="Vault-Ordner")
+    p_similar.add_argument("query", help="Frage/Suchtext")
+    p_similar.add_argument("-n", "--top", type=int, default=5)
+    p_similar.add_argument("--model", "-m", default=None)
+    p_similar.add_argument("--ollama-url", default=None)
+
     args = parser.parse_args(argv)
+
+    if args.cmd == "models":
+        client = OllamaClient(args.ollama_url)
+        try:
+            models = client.list_models()
+        except OllamaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"Modelle auf {client.base_url}:")
+        for name in models or ["(keine Modelle installiert)"]:
+            print(f"  - {name}")
+        return 0
+
     vault = Path(args.vault).resolve()
     if not vault.is_dir():
         parser.error(f"Vault-Ordner existiert nicht: {vault}")
@@ -333,6 +668,39 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             print(f"{r['path']}")
             print(f"  Titel: {r['title']}" + (f"  Tags: {r['tags']}" if r["tags"] else ""))
             print(f"  … {r['snippet']}")
+        return 0
+
+    if args.cmd == "embed":
+        client = OllamaClient(args.ollama_url)
+        try:
+            model = _resolve_model(client, args.model, "DOCLING_EMBED_MODEL",
+                                   "Embeddings")
+            summary = embed_vault(vault, client, model)
+        except OllamaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"Embeddings aktualisiert (Modell {summary.model}, "
+              f"Dimension {summary.dimension}): {summary.chunks_embedded} neu, "
+              f"{summary.chunks_reused} wiederverwendet "
+              f"({summary.notes} Notizen).")
+        return 0
+
+    if args.cmd == "similar":
+        client = OllamaClient(args.ollama_url)
+        try:
+            results = similar(vault, args.query, client,
+                              model=args.model or os.environ.get("DOCLING_EMBED_MODEL"),
+                              top_k=args.top)
+        except OllamaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if not results:
+            print("Keine Embeddings vorhanden oder keine Treffer.")
+            return 1
+        for r in results:
+            heading = f" › {r['heading']}" if r["heading"] else ""
+            print(f"{r['score']:.3f}  {r['path']}{heading}")
+            print(f"       {r['text'][:120]}")
         return 0
 
     return 0

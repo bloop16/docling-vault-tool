@@ -18,7 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 # Ereignisbasierte Ordnerueberwachung statt Polling (empfohlen fuer lokale Platten).
 watch = ["watchdog>=4"]
-dev = ["pytest>=8", "watchdog>=4"]
+# Semantische Suche via Ollama-Embeddings (Cosine-Similarity in numpy).
+embed = ["numpy>=1.24"]
+dev = ["pytest>=8", "watchdog>=4", "numpy>=1.24"]
 
 [project.scripts]
 docling-vault = "docling_worker:main"

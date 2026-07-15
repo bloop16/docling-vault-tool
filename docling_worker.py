@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import time
 import traceback
 from dataclasses import dataclass, asdict
@@ -816,6 +817,17 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         "Frontmatter (siehe vault_builder.py)",
     )
     parser.add_argument(
+        "--embed",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="MODELL",
+        help="Nach Build+Index zusaetzlich Embeddings via Ollama berechnen "
+        "(Modell optional, sonst ENV DOCLING_EMBED_MODEL). Additiv: ist "
+        "Ollama nicht erreichbar, laufen Konvertierung, Build und "
+        "FTS5-Index trotzdem vollstaendig durch.",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -944,6 +956,22 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         vault_index.write_index_md(output_dir)
         print(f"  Such-Index: {idx.indexed} neu/geändert, "
               f"{idx.total} Notizen insgesamt (INDEX.md aktualisiert).")
+
+        if args.embed is not None:
+            # Embeddings sind additiv: Fehler brechen den Lauf nicht ab.
+            client = vault_index.OllamaClient()
+            try:
+                model = vault_index._resolve_model(
+                    client, args.embed or None, "DOCLING_EMBED_MODEL",
+                    "Embeddings",
+                )
+                emb = vault_index.embed_vault(output_dir, client, model)
+                print(f"  Embeddings: {emb.chunks_embedded} neu, "
+                      f"{emb.chunks_reused} wiederverwendet "
+                      f"(Modell {emb.model}, Dimension {emb.dimension}).")
+            except vault_index.OllamaError as exc:
+                print(f"  WARNUNG Embeddings uebersprungen: {exc}",
+                      file=sys.stderr)
 
     return 1 if failed else 0
 
