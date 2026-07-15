@@ -25,6 +25,8 @@ import streamlit as st
 import docling_worker as dw
 import file_transfer as ft
 import job_manager as jm
+import vault_builder as vb
+import vault_index as vi
 
 st.set_page_config(
     page_title="Docling Vault Tool",
@@ -390,8 +392,8 @@ st.session_state["output_dir"] = output_dir
 profile = None
 config: dw.ConverterConfig | None = None
 
-tab_convert, tab_jobs, tab_transfer = st.tabs(
-    ["Konvertierung", "Jobs & Überwachung", "Datenaustausch"]
+tab_convert, tab_jobs, tab_search, tab_transfer = st.tabs(
+    ["Konvertierung", "Jobs & Überwachung", "Suche & KI", "Datenaustausch"]
 )
 
 # ===========================================================================
@@ -522,10 +524,25 @@ with tab_convert:
             add_frontmatter=add_frontmatter,
         )
 
+        build_after = st.toggle(
+            "Vault-Build nach der Konvertierung",
+            value=st.session_state.get("build_after", False),
+            help="Post-Processing: Notizen nach Inbox/, Bilder nach "
+            "Attachments/ mit Obsidian-Wikilinks, normiertes Frontmatter; "
+            "Such-Index und INDEX.md werden automatisch aktualisiert. "
+            "Bestehende Notizen des Vaults bleiben unangetastet.",
+        )
+        st.session_state["build_after"] = build_after
+
         with st.container(border=True):
             st.markdown("**Zusammenfassung**")
             for line in dw.describe_plan(profile, config):
                 st.markdown(f"- {line}")
+            if build_after:
+                st.markdown(
+                    "- Danach: Vault-Build (Inbox/, Attachments/, Wikilinks) "
+                    "+ Such-Index"
+                )
 
         confirm = st.button(
             "Plan bestätigen und Konvertierung starten",
@@ -608,7 +625,7 @@ with tab_convert:
                 ph_eta.metric("Restzeit", _format_duration(eta))
                 ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
 
-        st.session_state["last_run"] = {
+        last_run = {
             "target": str(out_root),
             "duration": time.perf_counter() - start_time,
             "ok": ok,
@@ -617,6 +634,28 @@ with tab_convert:
             "on_success": on_success,
             "failures": failures,
         }
+
+        # Optionaler Vault-Build + Index (siehe Toggle im Plan-Bereich).
+        if st.session_state.get("build_after"):
+            with st.spinner("Vault-Build und Such-Index…"):
+                try:
+                    build_source = (
+                        out_root / config.notes_subdir
+                        if config.notes_subdir else out_root
+                    )
+                    bsum = vb.build_vault(build_source, out_root)
+                    isum = vi.update_index(out_root)
+                    vi.write_index_md(out_root)
+                    last_run["build"] = {
+                        "notes": bsum.notes,
+                        "images": bsum.images,
+                        "collisions": bsum.note_collisions + bsum.image_collisions,
+                        "index_total": isum.total,
+                    }
+                except Exception as exc:  # noqa: BLE001 -- Ergebnis anzeigen
+                    last_run["build_error"] = str(exc)
+
+        st.session_state["last_run"] = last_run
 
     # --- Ergebnis (persistiert ueber Reruns) -------------------------------
     last = st.session_state.get("last_run")
@@ -634,6 +673,17 @@ with tab_convert:
                 else "ins Archiv verschoben"
             )
             st.caption(f"{last['moved']} Originaldatei(en) {verb}.")
+        build = last.get("build")
+        if build:
+            st.caption(
+                f"Vault-Build: {build['notes']} Notiz(en) → Inbox/, "
+                f"{build['images']} Bild(er) → Attachments/ · "
+                f"Such-Index: {build['index_total']} Notizen, INDEX.md aktualisiert"
+                + (f" · {build['collisions']} Kollision(en) aufgelöst"
+                   if build["collisions"] else "")
+            )
+        if last.get("build_error"):
+            st.error(f"Vault-Build fehlgeschlagen: {last['build_error']}")
         if last["failures"]:
             _render_failures(last["failures"])
 
@@ -668,12 +718,22 @@ with tab_jobs:
                 min_value=5, value=30, step=5,
                 key="new_job_poll",
             )
+            job_build = st.toggle(
+                "Vault-Build + Such-Index nach jedem Lauf",
+                value=st.session_state.get("build_after", False),
+                key="new_job_build",
+                help="Nach jedem Lauf mit Neukonvertierungen: Notizen nach "
+                "Inbox/, Bilder nach Attachments/ mit Wikilinks, Index und "
+                "INDEX.md aktualisieren. Die Watch-Pipeline liefert damit "
+                "direkt den fertigen, durchsuchbaren Vault.",
+            )
             for line in dw.describe_plan(profile, config):
                 st.caption(f"– {line}")
             if st.button("Job speichern", key="save_job"):
                 new_job = jm.add_job(
                     job_name, input_dir, output_dir, config,
                     poll_interval=int(poll), max_workers=max_workers,
+                    build_vault=job_build,
                 )
                 st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
 
@@ -727,12 +787,23 @@ with tab_jobs:
                 else:
                     run_bar.progress(1.0)
                     if summary.converted_ok or summary.converted_failed:
-                        st.success(
+                        msg = (
                             f"{summary.converted_ok} konvertiert, "
                             f"{summary.converted_failed} Fehler "
                             f"(neu: {summary.changes['neu']}, "
                             f"geändert: {summary.changes['geaendert']})."
                         )
+                        if summary.build_notes is not None:
+                            msg += (
+                                f" Vault-Build: {summary.build_notes} → Inbox/, "
+                                f"Index: {summary.index_total} Notizen."
+                            )
+                        st.success(msg)
+                        if summary.build_error:
+                            st.warning(
+                                f"Vault-Build fehlgeschlagen: "
+                                f"{summary.build_error}"
+                            )
                     else:
                         st.info("Keine neuen oder geänderten Dateien.")
 
@@ -744,6 +815,7 @@ with tab_jobs:
                 f"Bereits konvertiert: {done_n} · "
                 f"Letzter Lauf: {job_fresh.last_run_at or '–'} · "
                 f"Watch-Intervall: {j.poll_interval}s"
+                + (" · Vault-Build + Index: aktiv" if j.build_vault else "")
             )
 
             pending = st.session_state.get(f"check_{j.id}")
@@ -756,6 +828,15 @@ with tab_jobs:
             history = jm.load_history(j.id)
             with st.expander(f"Verlauf ({len(history)} Läufe)"):
                 if history:
+                    def _build_cell(rec: dict) -> str:
+                        if rec.get("build_error"):
+                            return "Fehler"
+                        build = rec.get("build")
+                        if build:
+                            return (f"{build.get('notes', 0)} → Inbox "
+                                    f"(Index {build.get('index_total', 0)})")
+                        return "–"
+
                     hist_rows = [
                         {
                             "Zeitpunkt": rec.get("started_at", "–"),
@@ -764,6 +845,7 @@ with tab_jobs:
                             "Geändert": rec.get("changes", {}).get("geaendert", 0),
                             "Konvertiert": rec.get("converted_ok", 0),
                             "Fehler": rec.get("converted_failed", 0),
+                            "Build": _build_cell(rec),
                             "Dauer (s)": rec.get("duration_s", 0),
                         }
                         for rec in reversed(history)
@@ -787,7 +869,217 @@ with tab_jobs:
             st.code(f"python job_manager.py watch {j.id}", language="bash")
 
 # ===========================================================================
-# Tab 3: Datenaustausch (Ad-hoc-Upload/-Download fuer den Server-Betrieb)
+# Tab 3: Suche & KI (Such-Index, Ollama-Embeddings und -Tagging)
+# ===========================================================================
+with tab_search:
+    if not output_dir or not Path(output_dir).is_dir():
+        st.info(
+            "In der Seitenleiste einen existierenden Ziel-Vault-Ordner "
+            "angeben – Suche und Index beziehen sich auf diesen Vault."
+        )
+    else:
+        vault_path = Path(output_dir).resolve()
+
+        # ---------------- Such-Index: Status + Aktualisierung -------------
+        _overline("Such-Index")
+        status = vi.index_status(vault_path)
+        if status["exists"]:
+            line = f"{status['notes']} Notiz(en) indexiert"
+            if status["last_indexed"]:
+                line += f" · zuletzt {status['last_indexed']}"
+            if status["embedded_chunks"]:
+                line += (f" · {status['embedded_chunks']} Chunks mit "
+                         f"Embeddings ({status['embed_model']})")
+            st.caption(line)
+        else:
+            st.caption(
+                "Noch kein Index vorhanden – „Index aktualisieren“ ausführen "
+                "oder die Konvertierung mit Vault-Build starten."
+            )
+        if st.button("Index aktualisieren"):
+            with st.spinner("Indexiere Notizen…"):
+                isum = vi.update_index(vault_path)
+                vi.write_index_md(vault_path)
+            st.success(
+                f"{isum.indexed} neu/geändert, {isum.unchanged} unverändert, "
+                f"{isum.removed} entfernt ({isum.total} Notizen gesamt). "
+                "INDEX.md aktualisiert."
+            )
+
+        # ---------------- Suche -------------------------------------------
+        _overline("Suche")
+        q_col, m_col, n_col = st.columns([3, 1.5, 0.9])
+        search_term = q_col.text_input(
+            "Suchbegriff oder Frage", key="search_term",
+            placeholder="z. B. Wartungsplan Photovoltaik",
+        )
+        search_mode = m_col.radio(
+            "Modus",
+            options=["Volltext", "Semantisch"],
+            help="Volltext: FTS5 über Titel, Tags, Schlagwörter und den "
+            "kompletten Inhalt. Semantisch: Ähnlichkeitssuche über die "
+            "Ollama-Embeddings (unten zuerst berechnen).",
+        )
+        search_top = n_col.number_input("Treffer", 1, 50, 10)
+
+        if st.button("Suchen", type="primary") and search_term:
+            if search_mode == "Volltext":
+                hits = vi.query_index(vault_path, search_term,
+                                      limit=int(search_top))
+                if not hits:
+                    st.info("Keine Treffer.")
+                for h in hits:
+                    with st.container(border=True):
+                        title_line = f"**{h['title']}** · `{h['path']}`"
+                        if h["tags"]:
+                            title_line += " · " + " ".join(
+                                f"#{t}" for t in h["tags"].split()
+                            )
+                        st.markdown(title_line)
+                        st.caption(f"… {h['snippet']}")
+            else:
+                client = vi.OllamaClient(
+                    st.session_state.get("ollama_url") or None
+                )
+                try:
+                    hits = vi.similar(
+                        vault_path, search_term, client,
+                        model=st.session_state.get("embed_model"),
+                        top_k=int(search_top),
+                    )
+                except vi.OllamaError as exc:
+                    st.error(str(exc))
+                else:
+                    if not hits:
+                        st.info("Keine Treffer.")
+                    for h in hits:
+                        with st.container(border=True):
+                            heading = f" › {h['heading']}" if h["heading"] else ""
+                            st.markdown(
+                                f"**{h['score']:.3f}** · `{h['path']}`{heading}"
+                            )
+                            st.caption(h["text"])
+
+        # ---------------- Ollama: Verbindung, Embeddings, Tagging ---------
+        _overline("Ollama (Embeddings & Tagging)")
+        st.caption(
+            "Additiv: Ohne erreichbares Ollama funktionieren Konvertierung, "
+            "Vault-Build und Volltextsuche uneingeschränkt."
+        )
+        u_col, c_col = st.columns([3, 1])
+        ollama_url = u_col.text_input(
+            "Ollama-URL",
+            value=st.session_state.get(
+                "ollama_url",
+                os.environ.get("DOCLING_OLLAMA_URL", vi.DEFAULT_OLLAMA_URL),
+            ),
+            help="Auch per Umgebungsvariable DOCLING_OLLAMA_URL setzbar.",
+        )
+        st.session_state["ollama_url"] = ollama_url
+        c_col.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        if c_col.button("Verbindung prüfen", width="stretch"):
+            try:
+                found = vi.OllamaClient(ollama_url).list_models()
+            except vi.OllamaError as exc:
+                st.session_state.pop("ollama_models", None)
+                st.error(str(exc))
+            else:
+                st.session_state["ollama_models"] = found
+                st.success(f"Verbunden – {len(found)} Modell(e) verfügbar.")
+
+        models = st.session_state.get("ollama_models")
+        if not models:
+            st.caption(
+                "Modellauswahl und Aktionen erscheinen nach erfolgreicher "
+                "Verbindungsprüfung (Liste kommt live vom Server, /api/tags)."
+            )
+        else:
+            def _default_idx(candidates: list[str], want_embed: bool) -> int:
+                env = os.environ.get(
+                    "DOCLING_EMBED_MODEL" if want_embed else "DOCLING_TAG_MODEL"
+                )
+                for i, name in enumerate(candidates):
+                    if env and name.startswith(env):
+                        return i
+                for i, name in enumerate(candidates):
+                    if ("embed" in name.lower()) == want_embed:
+                        return i
+                return 0
+
+            e_col, t_col = st.columns(2)
+            embed_model = e_col.selectbox(
+                "Embedding-Modell", models,
+                index=_default_idx(models, want_embed=True),
+                key="embed_model",
+            )
+            tag_model = t_col.selectbox(
+                "Tagging-Modell", models,
+                index=_default_idx(models, want_embed=False),
+                key="tag_model",
+            )
+            write_notes = st.toggle(
+                "Tags/Summary ins Frontmatter der Notizen schreiben",
+                value=False,
+                help="Neue Tags werden mit vorhandenen manuellen Tags "
+                "gemergt, nie ersetzt. Ohne diese Option landet das Ergebnis "
+                "nur im Such-Index.",
+            )
+
+            a_col, b_col = st.columns(2)
+            if a_col.button("Embeddings berechnen", width="stretch"):
+                bar = st.progress(0.0)
+                txt = st.empty()
+
+                def _emb_cb(done, total, rel, _b=bar, _t=txt):
+                    _b.progress(done / max(total, 1))
+                    _t.caption(f"{done}/{total} · {rel}")
+
+                try:
+                    with st.spinner("Berechne Embeddings…"):
+                        esum = vi.embed_vault(
+                            vault_path, vi.OllamaClient(ollama_url),
+                            embed_model, progress=_emb_cb,
+                        )
+                except vi.OllamaError as exc:
+                    st.error(str(exc))
+                else:
+                    bar.progress(1.0)
+                    st.success(
+                        f"{esum.chunks_embedded} Chunks neu, "
+                        f"{esum.chunks_reused} wiederverwendet "
+                        f"(Modell {esum.model}, Dimension {esum.dimension})."
+                    )
+
+            if b_col.button("Tagging ausführen", width="stretch"):
+                bar = st.progress(0.0)
+                txt = st.empty()
+
+                def _tag_cb(done, total, rel, _b=bar, _t=txt):
+                    _b.progress(done / max(total, 1))
+                    _t.caption(f"{done}/{total} · {rel}")
+
+                try:
+                    with st.spinner("Erzeuge Tags und Zusammenfassungen…"):
+                        tsum = vi.tag_vault(
+                            vault_path, vi.OllamaClient(ollama_url),
+                            tag_model, write_notes=write_notes,
+                            progress=_tag_cb,
+                        )
+                        vi.write_index_md(vault_path)
+                except vi.OllamaError as exc:
+                    st.error(str(exc))
+                else:
+                    bar.progress(1.0)
+                    st.success(
+                        f"{tsum.tagged} Notiz(en) getaggt, "
+                        f"{tsum.unchanged} unverändert, "
+                        f"{tsum.parse_errors} unbrauchbare Antworten."
+                        + (" Tags/Summary im Frontmatter aktualisiert."
+                           if write_notes else "")
+                    )
+
+# ===========================================================================
+# Tab 4: Datenaustausch (Ad-hoc-Upload/-Download fuer den Server-Betrieb)
 # ===========================================================================
 with tab_transfer:
     st.caption(

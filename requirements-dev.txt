@@ -4,3 +4,5 @@ pytest>=8
 watchdog>=4
 # Laufzeitabhaengigkeit des Vault-Builders, hier fuer die Tests ohne Docling.
 python-frontmatter>=1.0
+# Fuer die Embedding-/Similarity-Tests (Laufzeit: Extra [embed]).
+numpy>=1.24

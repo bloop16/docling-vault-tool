@@ -293,7 +293,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     if not out_root.is_dir():
         parser.error(f"Output-Ordner existiert nicht: {out_root}")
 
-    summary = build_vault(out_root, Path(args.vault).resolve(),
+    vault = Path(args.vault).resolve()
+    summary = build_vault(out_root, vault,
                           inbox_subdir=args.inbox,
                           attachments_subdir=args.attachments)
     print(f"Vault-Build abgeschlossen: {summary.notes} Notiz(en) nach "
@@ -303,6 +304,14 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
               f"{summary.image_collisions} Bild(er) (Hash-Suffix).")
     if summary.notes == 0:
         print("  Hinweis: keine .md-Dateien gefunden (bereits gebaut?).")
+
+    # Such-Index nach jedem Build automatisch mitpflegen.
+    import vault_index
+
+    idx = vault_index.update_index(vault)
+    vault_index.write_index_md(vault)
+    print(f"Such-Index: {idx.indexed} neu/geändert, {idx.total} Notizen "
+          f"insgesamt (INDEX.md aktualisiert).")
     return 0
 
 
