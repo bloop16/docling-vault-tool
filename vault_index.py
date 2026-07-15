@@ -137,6 +137,12 @@ def open_db(vault_dir: os.PathLike | str) -> sqlite3.Connection:
         "INSERT OR IGNORE INTO index_meta(key, value) VALUES('schema_version', ?)",
         (_SCHEMA_VERSION,),
     )
+    # tagged_hash: Content-Stand, fuer den der Tagging-Schritt zuletzt lief
+    # (Idempotenz). Nachtraegliche Migration bestehender Datenbanken.
+    try:
+        conn.execute("ALTER TABLE note_meta ADD COLUMN tagged_hash TEXT")
+    except sqlite3.OperationalError:
+        pass  # Spalte existiert bereits
     return conn
 
 
@@ -542,6 +548,144 @@ def similar(
 
 
 # ---------------------------------------------------------------------------
+# Inhaltsbasiertes Tagging + Summary via Ollama (optional)
+# ---------------------------------------------------------------------------
+
+_TAG_PROMPT = """Du bist ein Verschlagwortungs-Assistent für einen Obsidian-Vault.
+Analysiere die folgende Notiz und antworte NUR mit einem JSON-Objekt in
+exakt diesem Format, ohne weiteren Text:
+{{"tags": ["tag1", "tag2"], "summary": "Ein bis zwei Sätze."}}
+
+Regeln: 3 bis 7 Tags, kleingeschrieben, Deutsch, ohne #-Zeichen.
+Die Zusammenfassung: 1-2 Sätze auf Deutsch, sachlich.
+
+Titel: {title}
+
+Inhalt:
+{content}
+"""
+
+_JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _parse_tag_response(response: str) -> Optional[tuple[list[str], str]]:
+    """Extrahiert tags/summary aus einer LLM-Antwort (tolerant, None bei Murks)."""
+    match = _JSON_BLOCK.search(response)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    tags = data.get("tags")
+    summary = data.get("summary")
+    if not isinstance(tags, list) or not isinstance(summary, str):
+        return None
+    clean = [str(t).strip().lstrip("#").lower().replace(" ", "-")
+             for t in tags if str(t).strip()]
+    return clean[:7], summary.strip()
+
+
+@dataclass
+class TagSummary:
+    """Ergebnis eines Tagging-Laufs."""
+
+    tagged: int = 0
+    unchanged: int = 0
+    parse_errors: int = 0
+    model: str = ""
+
+
+def tag_vault(
+    vault_dir: os.PathLike | str,
+    client,
+    model: str,
+    write_notes: bool = False,
+    max_content_chars: int = 4000,
+) -> TagSummary:
+    """Erzeugt Tags + 1-2-Satz-Summary je Notiz aus dem INHALT (Ollama).
+
+    Idempotent: pro Notiz wird der Content-Hash gemerkt (``tagged_hash``);
+    nur neue/geaenderte Notizen gehen erneut ans Modell. Mit ``write_notes``
+    werden Tags (gemergt mit vorhandenen manuellen Tags, nie ersetzt) und
+    ``summary`` zusaetzlich ins Notiz-Frontmatter geschrieben -- damit sind
+    sie in Obsidian echte Tags/Properties und Grundlage fuer die Zuweisung
+    durch den Curator. Unbrauchbare LLM-Antworten ueberspringen die Notiz,
+    der Lauf laeuft weiter.
+    """
+    vault = Path(vault_dir)
+    conn = open_db(vault)
+    summary = TagSummary(model=model)
+    try:
+        rows = conn.execute(
+            "SELECT path, content_hash, tagged_hash FROM note_meta"
+        ).fetchall()
+        for rel, content_hash, tagged_hash in rows:
+            if tagged_hash == content_hash:
+                summary.unchanged += 1
+                continue
+            md_path = vault / rel
+            if not md_path.is_file():
+                continue
+
+            post = frontmatter.load(md_path)
+            title = str(post.get("title") or md_path.stem)
+            response = client.generate(
+                model,
+                _TAG_PROMPT.format(
+                    title=title, content=post.content[:max_content_chars]
+                ),
+            )
+            parsed = _parse_tag_response(response)
+            if parsed is None:
+                summary.parse_errors += 1
+                continue
+            new_tags, new_summary = parsed
+
+            # Vorhandene manuelle Tags mergen, nie ersetzen.
+            existing = post.get("tags")
+            if isinstance(existing, str):
+                existing = [existing]
+            elif not isinstance(existing, list):
+                existing = []
+            merged = list(existing) + [t for t in new_tags if t not in existing]
+
+            if write_notes:
+                post["tags"] = merged
+                post["summary"] = new_summary
+                md_path.write_text(
+                    frontmatter.dumps(post) + "\n", encoding="utf-8"
+                )
+                # Neuen Dateistand einfrieren, damit weder update_index noch
+                # der naechste Tagging-Lauf die Notiz erneut anfassen.
+                content_hash = hashlib.sha256(md_path.read_bytes()).hexdigest()
+                conn.execute(
+                    "UPDATE note_meta SET content_hash=?, mtime=? WHERE path=?",
+                    (content_hash, md_path.stat().st_mtime, rel),
+                )
+
+            # FTS-Zeile mit neuen Tags/Summary neu schreiben.
+            fields = _note_fields(md_path, rel)
+            fields["tags"] = " ".join(str(t) for t in merged)
+            fields["summary"] = new_summary
+            conn.execute("DELETE FROM notes WHERE path = ?", (rel,))
+            conn.execute(
+                "INSERT INTO notes(path, title, tags, keywords, summary, content) "
+                "VALUES(:path, :title, :tags, :keywords, :summary, :content)",
+                fields,
+            )
+            conn.execute(
+                "UPDATE note_meta SET tagged_hash=? WHERE path=?",
+                (content_hash, rel),
+            )
+            summary.tagged += 1
+            conn.commit()
+    finally:
+        conn.close()
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # INDEX.md -- lesbarer Export
 # ---------------------------------------------------------------------------
 
@@ -632,6 +776,17 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_similar.add_argument("--model", "-m", default=None)
     p_similar.add_argument("--ollama-url", default=None)
 
+    p_tag = sub.add_parser(
+        "tag", help="Tags + Summary je Notiz aus dem Inhalt erzeugen (Ollama)"
+    )
+    p_tag.add_argument("--vault", "-o", required=True, help="Vault-Ordner")
+    p_tag.add_argument("--model", "-m", default=None,
+                       help="Sprachmodell (ENV DOCLING_TAG_MODEL)")
+    p_tag.add_argument("--write-notes", action="store_true",
+                       help="Tags/Summary zusaetzlich ins Notiz-Frontmatter "
+                       "schreiben (Tags werden gemergt, nie ersetzt)")
+    p_tag.add_argument("--ollama-url", default=None)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "models":
@@ -701,6 +856,25 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             heading = f" › {r['heading']}" if r["heading"] else ""
             print(f"{r['score']:.3f}  {r['path']}{heading}")
             print(f"       {r['text'][:120]}")
+        return 0
+
+    if args.cmd == "tag":
+        client = OllamaClient(args.ollama_url)
+        try:
+            model = _resolve_model(client, args.model, "DOCLING_TAG_MODEL",
+                                   "Tagging")
+            summary = tag_vault(vault, client, model,
+                                write_notes=args.write_notes)
+        except OllamaError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        write_index_md(vault)
+        print(f"Tagging abgeschlossen (Modell {summary.model}): "
+              f"{summary.tagged} Notiz(en) getaggt, "
+              f"{summary.unchanged} unverändert übersprungen, "
+              f"{summary.parse_errors} unbrauchbare Antworten.")
+        if args.write_notes:
+            print("Tags/Summary wurden ins Frontmatter der Notizen geschrieben.")
         return 0
 
     return 0
