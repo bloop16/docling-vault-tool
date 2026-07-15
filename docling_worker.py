@@ -945,7 +945,13 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         import vault_index
 
         print("\n=== Vault-Build ===")
-        summary = vault_builder.build_vault(output_dir, output_dir)
+        # Nur den frisch konvertierten Bereich bauen: liegt ein Import-
+        # Unterordner vor (Standard bei bestehenden Vaults), bleiben die
+        # uebrigen Notizen des Vaults unangetastet.
+        build_source = (
+            output_dir / config.notes_subdir if config.notes_subdir else output_dir
+        )
+        summary = vault_builder.build_vault(build_source, output_dir)
         print(f"  {summary.notes} Notiz(en) → Inbox/, "
               f"{summary.images} Bild(er) → Attachments/.")
         if summary.note_collisions or summary.image_collisions:

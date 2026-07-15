@@ -90,6 +90,20 @@ def test_embed_vault_and_reuse(vault):
     assert s3.chunks_reused == 0
 
 
+def test_embed_progress_callback(vault):
+    client = FakeOllama()
+    seen: list[tuple[int, int, str]] = []
+    vi.embed_vault(vault, client, "fake-model",
+                   progress=lambda d, t, p: seen.append((d, t, p)))
+    assert len(seen) == 2
+    assert seen[-1][0] == seen[-1][1] == 2
+    assert seen[0][2].endswith(".md")
+
+    status = vi.index_status(vault)
+    assert status["embedded_chunks"] > 0
+    assert status["embed_model"] == "fake-model"
+
+
 def test_similar_ranking(vault):
     client = FakeOllama()
     vi.embed_vault(vault, client, "fake-model")

@@ -119,6 +119,15 @@ def test_index_md_written_and_not_selfindexed(vault):
     assert not vi.query_index(vault, "Automatisch generiert")
 
 
+def test_index_status(vault):
+    assert vi.index_status(vault)["exists"] is False
+    vi.update_index(vault)
+    status = vi.index_status(vault)
+    assert status["exists"] and status["notes"] == 2
+    assert status["last_indexed"]
+    assert status["embedded_chunks"] == 0 and status["embed_model"] is None
+
+
 def test_cli_update_and_query(vault, capsys):
     assert vi._run_cli(["update", "--vault", str(vault)]) == 0
     out = capsys.readouterr().out

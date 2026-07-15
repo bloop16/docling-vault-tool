@@ -54,9 +54,18 @@ Zwei Bereiche:
 - **Jobs & Überwachung** – Jobs anlegen, per Dry-Run prüfen, inkrementell
   ausführen und den Lauf-Verlauf einsehen; der Befehl für die dauerhafte
   Ordnerüberwachung wird pro Job angezeigt.
+- **Suche & KI** – Index-Status und -Aktualisierung, Volltextsuche (FTS5 mit
+  Treffer-Snippets) und semantische Suche; Ollama-Anbindung mit
+  Verbindungsprüfung, Modellauswahl live vom Server (`/api/tags`) sowie
+  Embeddings- und Tagging-Läufen mit Fortschrittsanzeige.
 - **Datenaustausch** – für den Server-Betrieb ohne gemountete Ordner: Dateien
   oder ZIP-Archive hochladen (werden serverseitig entpackt) und den fertigen
   Vault als ZIP herunterladen.
+
+Im Konvertierungs-Tab lässt sich der **Vault-Build direkt zuschalten**
+(„Vault-Build nach der Konvertierung"): Inbox/Attachments/Wikilinks plus
+automatische Index-Aktualisierung in einem Durchgang; bestehende Notizen des
+Vaults bleiben dabei unangetastet.
 
 In der Seitenleiste lassen sich die Docling-Funktionen je Lauf zuschalten:
 **Bilder extrahieren** (inklusive Skalierung der Bildauflösung),

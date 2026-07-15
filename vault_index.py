@@ -49,6 +49,8 @@ from typing import Optional
 
 import frontmatter
 
+from typing import Callable
+
 INDEX_DIR = ".vault-index"
 INDEX_DB = "index.db"
 INDEX_MD = "INDEX.md"
@@ -236,6 +238,27 @@ def update_index(vault_dir: os.PathLike | str) -> IndexSummary:
     finally:
         conn.close()
     return summary
+
+
+def index_status(vault_dir: os.PathLike | str) -> dict:
+    """Kompakter Status des Index (fuer Dashboard/CLI-Anzeigen)."""
+    if not _db_path(vault_dir).is_file():
+        return {"exists": False, "notes": 0, "embedded_chunks": 0,
+                "embed_model": None, "last_indexed": None}
+    conn = open_db(vault_dir)
+    try:
+        notes = conn.execute("SELECT count(*) FROM note_meta").fetchone()[0]
+        last = conn.execute("SELECT max(indexed_at) FROM note_meta").fetchone()[0]
+        chunks = conn.execute(
+            "SELECT count(*) FROM chunks WHERE embedding IS NOT NULL"
+        ).fetchone()[0]
+        model = conn.execute(
+            "SELECT value FROM index_meta WHERE key='embed_model'"
+        ).fetchone()
+    finally:
+        conn.close()
+    return {"exists": True, "notes": notes, "embedded_chunks": chunks,
+            "embed_model": model[0] if model else None, "last_indexed": last}
 
 
 def query_index(
@@ -428,6 +451,7 @@ def embed_vault(
     vault_dir: os.PathLike | str,
     client,
     model: str,
+    progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> EmbedSummary:
     """Berechnet Embeddings fuer alle Notiz-Chunks (sequenziell, idempotent).
 
@@ -452,7 +476,7 @@ def embed_vault(
         summary.dimension = len(probe)
 
         note_paths = [r[0] for r in conn.execute("SELECT path FROM note_meta")]
-        for rel in note_paths:
+        for done, rel in enumerate(note_paths, start=1):
             md_path = vault / rel
             if not md_path.is_file():
                 continue
@@ -483,6 +507,8 @@ def embed_vault(
                 )
             summary.notes += 1
             conn.commit()   # pro Notiz committen -- Abbruch verliert wenig
+            if progress:
+                progress(done, len(note_paths), rel)
 
         conn.execute(
             "INSERT INTO index_meta(key, value) VALUES('embed_model', ?) "
@@ -602,6 +628,7 @@ def tag_vault(
     model: str,
     write_notes: bool = False,
     max_content_chars: int = 4000,
+    progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> TagSummary:
     """Erzeugt Tags + 1-2-Satz-Summary je Notiz aus dem INHALT (Ollama).
 
@@ -620,7 +647,9 @@ def tag_vault(
         rows = conn.execute(
             "SELECT path, content_hash, tagged_hash FROM note_meta"
         ).fetchall()
-        for rel, content_hash, tagged_hash in rows:
+        for done, (rel, content_hash, tagged_hash) in enumerate(rows, start=1):
+            if progress:
+                progress(done, len(rows), rel)
             if tagged_hash == content_hash:
                 summary.unchanged += 1
                 continue
