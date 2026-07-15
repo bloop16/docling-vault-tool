@@ -34,6 +34,7 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `dashboard_launcher.py` | Einstiegspunkt für den `docling-vault-ui`-Befehl |
 | `file_transfer.py`  | Upload-Ablage und ZIP-Verpackung für den Server-Betrieb |
 | `vault_builder.py`  | Post-Processing: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks, Frontmatter) |
+| `vault_index.py`    | Such-Index für KI-Retrieval: SQLite-FTS5 + INDEX.md, optional Ollama-Embeddings/-Tagging |
 | `pyproject.toml`    | Paketdefinition mit Konsolenbefehlen |
 | `Dockerfile` / `docker-compose.yml` | Container-Betrieb auf einem Headless-Server |
 | `deploy/`           | Dienst-Vorlagen (systemd, Windows-Aufgabenplanung) |
@@ -80,6 +81,7 @@ pip install .            # oder: pip install .[watch] für den Ereignismodus
 | `docling-vault-jobs` | Jobs verwalten: `add`, `list`, `plan`, `run`, `history`, `watch`, `rm` |
 | `docling-vault-ui`   | Dashboard starten (Streamlit-Optionen wie `--server.port 8080` anhängbar) |
 | `docling-vault-build` | Vault-Build standalone: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks) |
+| `docling-vault-index` | Such-Index: `update`, `query` (FTS5), `models`, `embed`, `similar`, `tag` (Ollama) |
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
@@ -234,6 +236,72 @@ vault/
 Der Builder ist idempotent: `Inbox/` und `Attachments/` werden beim Scan
 ausgenommen, ein zweiter Lauf ändert nichts.
 
+## Such-Index & semantische Suche (KI-Retrieval)
+
+Damit ein KI-Modell mit Ordnerzugriff **gezielt navigieren kann statt den
+gesamten Vault einzulesen**, pflegt das Tool einen dateibasierten Index im
+Vault selbst – keine externe Datenbank, kein Server. Der komplette Workflow:
+
+```bash
+docling-vault -i <quellen> -o <vault> --build-vault   # Convert + Build + Index
+docling-vault-index update  --vault <vault>            # Index standalone pflegen
+docling-vault-index query   --vault <vault> "begriff"  # Volltextsuche (FTS5)
+docling-vault-index embed   --vault <vault> -m nomic-embed-text  # optional
+docling-vault-index similar --vault <vault> "frage"    # semantische Suche
+docling-vault-index tag     --vault <vault> -m llama3.2 --write-notes  # optional
+```
+
+**`.vault-index/index.db`** (SQLite mit FTS5, reine Python-Standardbibliothek):
+Volltextindex über Pfad, Titel, Tags, automatisch extrahierte Schlagwörter,
+Summary und den **kompletten Notiz-Inhalt**. Ein Modell, das Code ausführen
+kann, fragt gezielt ab statt zu greppen:
+
+```sql
+SELECT path, title FROM notes WHERE notes MATCH 'suchbegriff'
+```
+
+**`INDEX.md`** im Vault-Root: kompakte, aus der Datenbank generierte Übersicht
+(Titel, Pfad, Tags, Schlagwörter, Summary je Notiz) – für Modelle, die keinen
+Code ausführen können: erst die Übersicht lesen, dann gezielt einzelne Notizen
+nachladen. Beides wird bei jedem `--build-vault`-Lauf automatisch und
+**inkrementell** aktualisiert (Content-Hash je Notiz – nur Neues/Geändertes
+wird neu indexiert).
+
+**Schlagwörter ohne LLM:** Aus jedem Notiz-Inhalt werden die häufigsten
+inhaltstragenden Begriffe extrahiert (stoppwort-gefiltert, Deutsch/Englisch) –
+sofort durchsuchbar und in `INDEX.md` sichtbar.
+
+### Optional: Ollama-Anbindung (Embeddings + Tagging)
+
+Beides ist **additiv** – ist Ollama nicht erreichbar, laufen Konvertierung,
+Vault-Build und FTS5-Index vollständig durch (Warnung statt Abbruch).
+
+```bash
+# Konfiguration per ENV (oder CLI-Flags --ollama-url / --model)
+export DOCLING_OLLAMA_URL=http://ollama.lan:11434   # Default: localhost:11434
+export DOCLING_EMBED_MODEL=nomic-embed-text
+export DOCLING_TAG_MODEL=llama3.2
+
+docling-vault-index models                      # verfügbare Modelle (/api/tags)
+docling-vault -i … -o … --build-vault --embed   # Build + Index + Embeddings
+```
+
+- **Embeddings** (`embed`/`similar`): Notizen werden an Markdown-Headings in
+  Chunks gesplittet (überlange Abschnitte mit Overlap), Embeddings liegen als
+  Float32-BLOBs in derselben `index.db`, die Ähnlichkeitssuche rechnet
+  Cosine-Similarity in numpy. Idempotent über Chunk-Hashes (nur Geändertes
+  geht an Ollama), die Embedding-Dimension wird beim ersten Aufruf vom Server
+  ermittelt. Sequenzielle Calls mit Timeout und Retry.
+- **Tagging** (`tag`): erzeugt aus dem Inhalt 3–7 Tags plus 1–2-Satz-Summary
+  je Notiz und schreibt sie in den Index; mit `--write-notes` zusätzlich ins
+  Notiz-Frontmatter (neue Tags werden mit vorhandenen manuellen Tags
+  **gemergt**, nie ersetzt). Idempotent; unbrauchbare Modell-Antworten
+  überspringen die Notiz, der Lauf läuft weiter.
+
+**Abgrenzung:** Automatisches Verlinken/Einsortieren übernimmt der
+nachgelagerte Vault-Curator-Agent – er greift direkt auf `index.db`
+(FTS + Embeddings) zu und ist nicht Teil dieses Tools.
+
 ## Nutzung ohne Dashboard (CLI)
 
 ```bash
@@ -269,7 +337,8 @@ Oder direkt über das Setup-Skript:
 | `--notes-subdir`  | Unterordner im Ziel für die Notizen (überschreibt Empfehlung; `""` = Wurzel) |
 | `--attachments-subdir` | Name des zentralen Anhang-Ordners (überschreibt Empfehlung) |
 | `--no-frontmatter`| Kein YAML-Frontmatter voranstellen |
-| `--build-vault`   | Nach der Konvertierung den Vault-Build ausführen (Inbox, Attachments, Wikilinks) |
+| `--build-vault`   | Nach der Konvertierung den Vault-Build ausführen (Inbox, Attachments, Wikilinks, Such-Index) |
+| `--embed [MODELL]`| Nach Build+Index zusätzlich Ollama-Embeddings berechnen (additiv; Ollama down → nur Warnung) |
 | `--yes` / `-y`    | Integrationsplan ohne Rückfrage bestätigen |
 | `--error-log`     | Pfad für ein JSON-Fehlerprotokoll fehlgeschlagener Dateien |
 
