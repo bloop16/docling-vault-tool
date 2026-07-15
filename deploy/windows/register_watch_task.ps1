@@ -10,7 +10,7 @@
         -WorkingDir  Arbeitsverzeichnis (Default: Repo-Wurzel)
 
     Entfernen:
-        Unregister-ScheduledTask -TaskName "DoclingVaultWatch-<JobId>"
+        Unregister-ScheduledTask -TaskName "Doc2VaultWatch-<JobId>"
 #>
 
 param(
@@ -40,12 +40,12 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable
 
 Register-ScheduledTask `
-    -TaskName "DoclingVaultWatch-$JobId" `
+    -TaskName "Doc2VaultWatch-$JobId" `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Docling Vault Ordnerueberwachung fuer Job $JobId" `
+    -Description "doc2vault-Ordnerueberwachung fuer Job $JobId" `
     -Force | Out-Null
 
-Write-Host "Aufgabe 'DoclingVaultWatch-$JobId' registriert (Start bei Anmeldung)."
-Write-Host "Sofort starten:  Start-ScheduledTask -TaskName 'DoclingVaultWatch-$JobId'"
+Write-Host "Aufgabe 'Doc2VaultWatch-$JobId' registriert (Start bei Anmeldung)."
+Write-Host "Sofort starten:  Start-ScheduledTask -TaskName 'Doc2VaultWatch-$JobId'"

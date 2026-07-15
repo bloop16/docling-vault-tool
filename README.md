@@ -1,4 +1,4 @@
-# docling-vault-tool
+# doc2vault
 
 Docling-basierte Batch-Konvertierung (PDF/DOCX/XLSX/PPTX → Markdown) für Obsidian Vaults,
 mit Streamlit-Dashboard und Ein-Klick-Setup (Linux/macOS/Windows).
@@ -31,7 +31,7 @@ Tabellen) statt reinem Textbrei und extrahiert eingebettete Bilder als eigene Da
 | `install_and_run.sh`  | Ein-Klick-Setup + Start für Linux/macOS |
 | `install_and_run.ps1` | Ein-Klick-Setup + Start für Windows (PowerShell) |
 | `job_manager.py`    | Sichere, inkrementelle Jobs + Ordnerüberwachung (Kernlogik + CLI) |
-| `dashboard_launcher.py` | Einstiegspunkt für den `docling-vault-ui`-Befehl |
+| `dashboard_launcher.py` | Einstiegspunkt für den `doc2vault-ui`-Befehl |
 | `file_transfer.py`  | Upload-Ablage und ZIP-Verpackung für den Server-Betrieb |
 | `vault_builder.py`  | Post-Processing: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks, Frontmatter) |
 | `vault_index.py`    | Such-Index für KI-Retrieval: SQLite-FTS5 + INDEX.md, optional Ollama-Embeddings/-Tagging |
@@ -86,11 +86,11 @@ pip install .            # oder: pip install .[watch] für den Ereignismodus
 
 | Befehl | Zweck |
 |--------|-------|
-| `docling-vault`      | Batch-Konvertierung per CLI (entspricht `docling_worker.py`) |
-| `docling-vault-jobs` | Jobs verwalten: `add`, `list`, `plan`, `run`, `history`, `watch`, `rm` |
-| `docling-vault-ui`   | Dashboard starten (Streamlit-Optionen wie `--server.port 8080` anhängbar) |
-| `docling-vault-build` | Vault-Build standalone: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks) |
-| `docling-vault-index` | Such-Index: `update`, `query` (FTS5), `models`, `embed`, `similar`, `tag` (Ollama) |
+| `doc2vault`      | Batch-Konvertierung per CLI (entspricht `docling_worker.py`) |
+| `doc2vault-jobs` | Jobs verwalten: `add`, `list`, `plan`, `run`, `history`, `watch`, `rm` |
+| `doc2vault-ui`   | Dashboard starten (Streamlit-Optionen wie `--server.port 8080` anhängbar) |
+| `doc2vault-build` | Vault-Build standalone: Docling-Output → Obsidian-Vault (Inbox, Attachments, Wikilinks) |
+| `doc2vault-index` | Such-Index: `update`, `query` (FTS5), `models`, `embed`, `similar`, `tag` (Ollama) |
 
 > Hinweis: `docling_worker.py` und `app_streamlit.py` sind die einzige Quelle der
 > Konvertierungslogik. Die Setup-Skripte bauen nur die Umgebung und starten diese
@@ -125,20 +125,20 @@ im Browser über `http://<server-ip>:8501` bedient.
 ```bash
 docker compose up -d                  # Dashboard auf Port 8501
 docker compose --profile watch up -d  # zusätzlich Ordnerüberwachung
-                                      # (vorher DOCLING_JOB=<job-id> setzen)
+                                      # (vorher DOC2VAULT_JOB=<job-id> setzen)
 ```
 
 Das Image ist CPU-only (PyTorch aus dem CPU-Index, ~3–4 GB statt 8+ GB).
-Beim ersten Lauf lädt Docling seine Modelle in das Volume `docling-models` –
+Beim ersten Lauf lädt Docling seine Modelle in das Volume `doc2vault-models` –
 das dauert einmalig einige Minuten, danach starten Läufe sofort. Jobs,
-Manifeste und Verläufe liegen im Volume `docling-config` und überleben
+Manifeste und Verläufe liegen im Volume `doc2vault-config` und überleben
 Container-Neustarts. Healthcheck: `http://<server-ip>:8501/_stcore/health`.
 
 **pip (ohne Docker):**
 
 ```bash
 pip install .[watch]
-docling-vault-ui --server.address 0.0.0.0 --server.port 8501
+doc2vault-ui --server.address 0.0.0.0 --server.port 8501
 ```
 
 ### Daten effizient zum Server und zurück
@@ -207,10 +207,10 @@ unverändert.
 
 ```bash
 # Integriert: Konvertierung + Build in einem Aufruf
-docling-vault -i /pfad/zu/quellen -o /pfad/zum/vault --build-vault
+doc2vault -i /pfad/zu/quellen -o /pfad/zum/vault --build-vault
 
 # Getrennt: Build standalone auf einen bestehenden Docling-Output-Ordner
-docling-vault-build --input /pfad/zum/docling-output --vault /pfad/zum/vault
+doc2vault-build --input /pfad/zum/docling-output --vault /pfad/zum/vault
 ```
 
 Was der Builder tut:
@@ -252,12 +252,12 @@ gesamten Vault einzulesen**, pflegt das Tool einen dateibasierten Index im
 Vault selbst – keine externe Datenbank, kein Server. Der komplette Workflow:
 
 ```bash
-docling-vault -i <quellen> -o <vault> --build-vault   # Convert + Build + Index
-docling-vault-index update  --vault <vault>            # Index standalone pflegen
-docling-vault-index query   --vault <vault> "begriff"  # Volltextsuche (FTS5)
-docling-vault-index embed   --vault <vault> -m nomic-embed-text  # optional
-docling-vault-index similar --vault <vault> "frage"    # semantische Suche
-docling-vault-index tag     --vault <vault> -m llama3.2 --write-notes  # optional
+doc2vault -i <quellen> -o <vault> --build-vault   # Convert + Build + Index
+doc2vault-index update  --vault <vault>            # Index standalone pflegen
+doc2vault-index query   --vault <vault> "begriff"  # Volltextsuche (FTS5)
+doc2vault-index embed   --vault <vault> -m nomic-embed-text  # optional
+doc2vault-index similar --vault <vault> "frage"    # semantische Suche
+doc2vault-index tag     --vault <vault> -m llama3.2 --write-notes  # optional
 ```
 
 **`.vault-index/index.db`** (SQLite mit FTS5, reine Python-Standardbibliothek):
@@ -287,12 +287,12 @@ Vault-Build und FTS5-Index vollständig durch (Warnung statt Abbruch).
 
 ```bash
 # Konfiguration per ENV (oder CLI-Flags --ollama-url / --model)
-export DOCLING_OLLAMA_URL=http://ollama.lan:11434   # Default: localhost:11434
-export DOCLING_EMBED_MODEL=nomic-embed-text
-export DOCLING_TAG_MODEL=llama3.2
+export DOC2VAULT_OLLAMA_URL=http://ollama.lan:11434   # Default: localhost:11434
+export DOC2VAULT_EMBED_MODEL=nomic-embed-text
+export DOC2VAULT_TAG_MODEL=llama3.2
 
-docling-vault-index models                      # verfügbare Modelle (/api/tags)
-docling-vault -i … -o … --build-vault --embed   # Build + Index + Embeddings
+doc2vault-index models                      # verfügbare Modelle (/api/tags)
+doc2vault -i … -o … --build-vault --embed   # Build + Index + Embeddings
 ```
 
 - **Embeddings** (`embed`/`similar`): Notizen werden an Markdown-Headings in
@@ -370,8 +370,8 @@ Warum „sicher":
   `RETRY_LIMIT` Versuchen nicht endlos neu verarbeitet (eine echte Änderung
   reaktiviert sie).
 
-Konfiguration/Status liegen nutzerspezifisch unter `DOCLING_VAULT_HOME` bzw. dem
-OS-Standard (`~/.config/docling-vault-tool`, `%APPDATA%`, `~/Library/…`).
+Konfiguration/Status liegen nutzerspezifisch unter `DOC2VAULT_HOME` bzw. dem
+OS-Standard (`~/.config/doc2vault`, `%APPDATA%`, `~/Library/…`).
 
 **Im Dashboard:** Tab *Jobs & Überwachung* – Job aus den aktuellen Einstellungen
 anlegen, „Prüfen" (Dry-Run), „Ausführen" (inkrementell), löschen; der
@@ -407,7 +407,7 @@ python job_manager.py watch   Berichte -n 30  # Ordner überwachen
 python job_manager.py rm      Berichte
 ```
 
-(Bei Paketinstallation entsprechend `docling-vault-jobs add …` usw.)
+(Bei Paketinstallation entsprechend `doc2vault-jobs add …` usw.)
 
 ### Überwachungsmodi: Ereignisse oder Polling
 
@@ -428,9 +428,9 @@ python job_manager.py rm      Berichte
 
 Vorlagen liegen unter `deploy/`:
 
-- **Linux (systemd):** `deploy/systemd/docling-vault-watch@.service` anpassen,
+- **Linux (systemd):** `deploy/systemd/doc2vault-watch@.service` anpassen,
   nach `/etc/systemd/system/` kopieren, dann
-  `systemctl enable --now docling-vault-watch@<job-id>`.
+  `systemctl enable --now doc2vault-watch@<job-id>`.
 - **Windows:** `deploy/windows/register_watch_task.ps1 -JobId <job-id>`
   registriert eine Aufgabe, die die Überwachung bei der Anmeldung startet und
   bei Fehlern neu anläuft.

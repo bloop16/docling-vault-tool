@@ -1,8 +1,8 @@
-# Docling Vault Tool -- Headless-Betrieb.
+# doc2vault -- Headless-Betrieb.
 #
 #   docker compose up -d                      # Dashboard: http://<server-ip>:8501
 #   docker compose --profile watch up -d      # zusaetzlich Ordnerueberwachung
-#                                             # (DOCLING_JOB=<job-id> setzen)
+#                                             # (DOC2VAULT_JOB=<job-id> setzen)
 #
 # Datenstrategie (effizient, ohne Hoch-/Runterladen):
 # Die Bind-Mounts unten zeigen auf ./data/*. Liegen die Daten auf einem NAS
@@ -20,33 +20,33 @@
 services:
   dashboard:
     build: .
-    image: docling-vault-tool
-    container_name: docling-vault-dashboard
+    image: doc2vault
+    container_name: doc2vault-dashboard
     ports:
       - "8501:8501"
     volumes:
       - ./data/source:/data/source
       - ./data/vault:/data/vault
       - ./data/archive:/data/archive
-      - docling-config:/data/config
-      - docling-models:/data/models
+      - doc2vault-config:/data/config
+      - doc2vault-models:/data/models
     restart: unless-stopped
 
   # Dauerhafte Ordnerueberwachung eines Jobs (Job vorher im Dashboard oder per
-  # `docker compose exec dashboard docling-vault-jobs add ...` anlegen).
+  # `docker compose exec dashboard doc2vault-jobs add ...` anlegen).
   watch:
     profiles: ["watch"]
-    image: docling-vault-tool
-    container_name: docling-vault-watch
-    command: ["docling-vault-jobs", "watch", "${DOCLING_JOB:?DOCLING_JOB=<job-id> setzen}"]
+    image: doc2vault
+    container_name: doc2vault-watch
+    command: ["doc2vault-jobs", "watch", "${DOC2VAULT_JOB:?DOC2VAULT_JOB=<job-id> setzen}"]
     volumes:
       - ./data/source:/data/source
       - ./data/vault:/data/vault
       - ./data/archive:/data/archive
-      - docling-config:/data/config
-      - docling-models:/data/models
+      - doc2vault-config:/data/config
+      - doc2vault-models:/data/models
     restart: unless-stopped
 
 volumes:
-  docling-config:
-  docling-models:
+  doc2vault-config:
+  doc2vault-models:

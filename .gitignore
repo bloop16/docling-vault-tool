@@ -11,7 +11,7 @@ build/
 # Tool-Ausgaben
 *.log
 fehler.json
-docling_fehler.csv
+doc2vault_fehler.csv
 
 # OS
 .DS_Store

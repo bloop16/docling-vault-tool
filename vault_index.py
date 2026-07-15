@@ -25,11 +25,11 @@ laufen Vault-Build und FTS5-Index trotzdem vollstaendig durch.
 
 CLI::
 
-    docling-vault-index update  --vault <vault>
-    docling-vault-index query   --vault <vault> "suchbegriff"
-    docling-vault-index models  [--ollama-url http://host:11434]
-    docling-vault-index embed   --vault <vault> --model nomic-embed-text
-    docling-vault-index similar --vault <vault> "frage" [-n 5]
+    doc2vault-index update  --vault <vault>
+    doc2vault-index query   --vault <vault> "suchbegriff"
+    doc2vault-index models  [--ollama-url http://host:11434]
+    doc2vault-index embed   --vault <vault> --model nomic-embed-text
+    doc2vault-index similar --vault <vault> "frage" [-n 5]
 """
 
 from __future__ import annotations
@@ -302,7 +302,7 @@ class OllamaError(RuntimeError):
 class OllamaClient:
     """Minimaler Ollama-HTTP-Client (Stdlib urllib, Timeout + Retry).
 
-    ``base_url`` kommt aus dem CLI-Flag bzw. ``DOCLING_OLLAMA_URL``.
+    ``base_url`` kommt aus dem CLI-Flag bzw. ``DOC2VAULT_OLLAMA_URL``.
     In Tests wird der Client durch ein Fake-Objekt mit derselben Schnittstelle
     ersetzt (``list_models``/``embed``/``generate``).
     """
@@ -314,7 +314,7 @@ class OllamaClient:
         retries: int = 2,
     ) -> None:
         self.base_url = (
-            base_url or os.environ.get("DOCLING_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+            base_url or os.environ.get("DOC2VAULT_OLLAMA_URL") or DEFAULT_OLLAMA_URL
         ).rstrip("/")
         self.timeout = timeout
         self.retries = retries
@@ -543,7 +543,7 @@ def similar(
         if not stored_model:
             raise OllamaError(
                 "Noch keine Embeddings vorhanden -- zuerst "
-                "'docling-vault-index embed --model …' ausfuehren."
+                "'doc2vault-index embed --model …' ausfuehren."
             )
         model = model or stored_model[0]
         rows = conn.execute(
@@ -785,7 +785,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         "models", help="Verfuegbare Ollama-Modelle anzeigen (/api/tags)"
     )
     p_models.add_argument("--ollama-url", default=None,
-                          help=f"Ollama-URL (ENV DOCLING_OLLAMA_URL, "
+                          help=f"Ollama-URL (ENV DOC2VAULT_OLLAMA_URL, "
                           f"Default {DEFAULT_OLLAMA_URL})")
 
     p_embed = sub.add_parser(
@@ -793,7 +793,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     )
     p_embed.add_argument("--vault", "-o", required=True, help="Vault-Ordner")
     p_embed.add_argument("--model", "-m", default=None,
-                         help="Embedding-Modell (ENV DOCLING_EMBED_MODEL)")
+                         help="Embedding-Modell (ENV DOC2VAULT_EMBED_MODEL)")
     p_embed.add_argument("--ollama-url", default=None)
 
     p_similar = sub.add_parser(
@@ -810,7 +810,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     )
     p_tag.add_argument("--vault", "-o", required=True, help="Vault-Ordner")
     p_tag.add_argument("--model", "-m", default=None,
-                       help="Sprachmodell (ENV DOCLING_TAG_MODEL)")
+                       help="Sprachmodell (ENV DOC2VAULT_TAG_MODEL)")
     p_tag.add_argument("--write-notes", action="store_true",
                        help="Tags/Summary zusaetzlich ins Notiz-Frontmatter "
                        "schreiben (Tags werden gemergt, nie ersetzt)")
@@ -857,7 +857,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     if args.cmd == "embed":
         client = OllamaClient(args.ollama_url)
         try:
-            model = _resolve_model(client, args.model, "DOCLING_EMBED_MODEL",
+            model = _resolve_model(client, args.model, "DOC2VAULT_EMBED_MODEL",
                                    "Embeddings")
             summary = embed_vault(vault, client, model)
         except OllamaError as exc:
@@ -873,7 +873,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         client = OllamaClient(args.ollama_url)
         try:
             results = similar(vault, args.query, client,
-                              model=args.model or os.environ.get("DOCLING_EMBED_MODEL"),
+                              model=args.model or os.environ.get("DOC2VAULT_EMBED_MODEL"),
                               top_k=args.top)
         except OllamaError as exc:
             print(str(exc), file=sys.stderr)
@@ -890,7 +890,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     if args.cmd == "tag":
         client = OllamaClient(args.ollama_url)
         try:
-            model = _resolve_model(client, args.model, "DOCLING_TAG_MODEL",
+            model = _resolve_model(client, args.model, "DOC2VAULT_TAG_MODEL",
                                    "Tagging")
             summary = tag_vault(vault, client, model,
                                 write_notes=args.write_notes)
@@ -910,7 +910,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
 
 
 def main() -> int:
-    """Einstiegspunkt fuer den ``docling-vault-index``-Konsolenbefehl."""
+    """Einstiegspunkt fuer den ``doc2vault-index``-Konsolenbefehl."""
     return _run_cli()
 
 

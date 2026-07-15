@@ -823,7 +823,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         default=None,
         metavar="MODELL",
         help="Nach Build+Index zusaetzlich Embeddings via Ollama berechnen "
-        "(Modell optional, sonst ENV DOCLING_EMBED_MODEL). Additiv: ist "
+        "(Modell optional, sonst ENV DOC2VAULT_EMBED_MODEL). Additiv: ist "
         "Ollama nicht erreichbar, laufen Konvertierung, Build und "
         "FTS5-Index trotzdem vollstaendig durch.",
     )
@@ -968,7 +968,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             client = vault_index.OllamaClient()
             try:
                 model = vault_index._resolve_model(
-                    client, args.embed or None, "DOCLING_EMBED_MODEL",
+                    client, args.embed or None, "DOC2VAULT_EMBED_MODEL",
                     "Embeddings",
                 )
                 emb = vault_index.embed_vault(output_dir, client, model)
@@ -983,7 +983,7 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
 
 
 def main() -> int:
-    """Einstiegspunkt fuer den ``docling-vault``-Konsolenbefehl."""
+    """Einstiegspunkt fuer den ``doc2vault``-Konsolenbefehl."""
     return _run_cli()
 
 

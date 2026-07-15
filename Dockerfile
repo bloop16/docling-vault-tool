@@ -1,6 +1,6 @@
-# Docling Vault Tool -- Dashboard-Container fuer den Headless-Betrieb.
+# doc2vault -- Dashboard-Container fuer den Headless-Betrieb.
 #
-# Build:   docker build -t docling-vault-tool .
+# Build:   docker build -t doc2vault .
 # Start:   docker compose up -d        (empfohlen, siehe docker-compose.yml)
 # Zugriff: http://<server-ip>:8501
 #
@@ -30,11 +30,11 @@ RUN pip install --no-cache-dir ".[watch]"
 #   /data/source  -> Quelldokumente     /data/vault -> Ziel-Vault
 #   /data/archive -> optionales Archiv  /data/config -> Jobs/Manifeste
 #   /data/models  -> Docling-/HuggingFace-Modellcache (erster Lauf laedt Modelle)
-ENV DOCLING_VAULT_HOME=/data/config \
+ENV DOC2VAULT_HOME=/data/config \
     HF_HOME=/data/models \
-    DOCLING_SOURCE_DIR=/data/source \
-    DOCLING_TARGET_DIR=/data/vault \
-    DOCLING_ARCHIVE_DIR=/data/archive \
+    DOC2VAULT_SOURCE_DIR=/data/source \
+    DOC2VAULT_TARGET_DIR=/data/vault \
+    DOC2VAULT_ARCHIVE_DIR=/data/archive \
     PYTHONUNBUFFERED=1
 RUN mkdir -p /data/source /data/vault /data/archive /data/config /data/models
 
@@ -43,4 +43,4 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
     CMD curl -fsS http://localhost:8501/_stcore/health || exit 1
 
-CMD ["docling-vault-ui", "--server.address=0.0.0.0", "--server.port=8501"]
+CMD ["doc2vault-ui", "--server.address=0.0.0.0", "--server.port=8501"]

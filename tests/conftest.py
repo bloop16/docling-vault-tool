@@ -74,5 +74,5 @@ def boom_converter():
 def jobs_home(tmp_path, monkeypatch):
     """Isoliertes Konfigverzeichnis fuer job_manager-Tests."""
     home = tmp_path / "config-home"
-    monkeypatch.setenv("DOCLING_VAULT_HOME", str(home))
+    monkeypatch.setenv("DOC2VAULT_HOME", str(home))
     return home
