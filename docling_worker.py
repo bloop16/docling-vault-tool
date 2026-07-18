@@ -119,6 +119,25 @@ class ConversionResult:
     reduced_mode: bool = False
 
 
+def _mute_streamlit_bare_mode_warning() -> None:
+    """Windows-Spawn-Worker importieren beim Start Streamlit-Teile des
+    Dashboard-Elternprozesses; ohne aktiven Script-Lauf loggt Streamlit dann
+    "missing ScriptRunContext ... can be ignored when running in bare mode".
+    Die Meldung ist laut Streamlit selbst bedeutungslos, wuerde aber pro
+    Worker-Prozess im Konsolen-Log auftauchen -- daher gezielt stummschalten
+    (die betroffenen Logger geben ausschliesslich diese Warnung aus)."""
+    import logging
+
+    for name in (
+        "streamlit.runtime.scriptrunner_utils.script_run_context",
+        "streamlit.runtime.scriptrunner.script_run_context",
+    ):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
+_mute_streamlit_bare_mode_warning()
+
+
 # Seitenflaeche in PDF-Punkten, ab der eine Seite als "riesig" gilt
 # (~A1 und groesser; CAD-Zeichnungen). Solche Seiten sprengen beim Rendern
 # mit voller Bildskalierung den Speicher (std::bad_alloc im Preprocess).
@@ -833,6 +852,7 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     """Initialisiert einen Worker-Prozess (baut den Converter einmalig)."""
     global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED
     global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
+    _mute_streamlit_bare_mode_warning()
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
