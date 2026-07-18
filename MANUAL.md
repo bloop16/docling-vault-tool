@@ -240,7 +240,17 @@ doc2vault-jobs plan    Berichte           # Dry-Run
 doc2vault-jobs run     Berichte           # einmalig inkrementell
 doc2vault-jobs watch   Berichte           # dauerhafte Überwachung
 doc2vault-jobs history Berichte -n 20     # Lauf-Verlauf
+doc2vault-jobs set     Berichte --ocr-engine easyocr   # Einstellungen ändern
 ```
+
+**Einstellungen nachträglich ändern:** `set` (bzw. „OCR-Einstellungen
+ändern" in der Job-Karte des Dashboards) passt einen bestehenden Job an,
+ohne ihn neu anzulegen — Manifest und Verlauf bleiben erhalten, bereits
+konvertierte Dateien werden **nicht** wiederholt. Typischer Fall: als
+OCR-Engine war Tesseract gespeichert, ist aber nicht installiert → auf
+EasyOCR umstellen. Änderbar: `--ocr on|off`, `--ocr-engine`, `--ocr-langs`,
+`--images on|off`, `--images-scale`, `--workers`, `--poll-interval`,
+`--build-vault on|off`.
 
 **Sicherheitsmerkmale:** Manifest je Job (Größe/mtime/SHA-256 → idempotent),
 atomar geschrieben und wiederaufsetzbar; Lockfile gegen Doppelläufe;
@@ -340,7 +350,8 @@ Für kleine Mengen ohne gemountete Ordner (Dashboard-Tab):
 ### `doc2vault-jobs`
 
 `add` (`--name --source --target` + Konvertierungs-Flags + `--build-vault`
-`--poll-interval --workers`), `list`, `plan <job>`, `run <job>`,
+`--poll-interval --workers`), `set <job>` (Einstellungen ändern, Manifest
+bleibt erhalten), `list`, `plan <job>`, `run <job>`,
 `history <job> [-n N]`, `watch <job> [-n Sek] [--events|--poll]`,
 `show <job>`, `rm <job>`.
 
@@ -390,7 +401,10 @@ dem Rechner nicht installiert bzw. nicht im PATH. Dashboard und CLI prüfen
 das inzwischen vor dem Start und brechen mit einem klaren Hinweis ab.
 Abhilfe: in der Seitenleiste auf die Standard-Engine **EasyOCR** wechseln —
 oder Tesseract installieren (Windows: UB-Mannheim-Installer, Sprache
-„German" mitwählen) und das Dashboard neu starten.
+„German" mitwählen) und das Dashboard neu starten. Steckt die Engine in
+einem gespeicherten **Job**, diesen per `doc2vault-jobs set <job>
+--ocr-engine easyocr` bzw. über „OCR-Einstellungen ändern" in der Job-Karte
+umstellen — Manifest und Verlauf bleiben dabei erhalten.
 
 **„pdf-parser" / `Inconsistent number of pages: N!=-1` / `Input document is
 not valid`:** Der Standard-PDF-Parser (docling-parse) konnte die Datei nicht
