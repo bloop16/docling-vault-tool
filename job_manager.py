@@ -232,6 +232,9 @@ def add_job(
 ) -> Job:
     """Legt einen Job an. Ist keine Config angegeben, wird sie aus dem Ziel
     (``analyze_vault`` -> ``recommend_config``) empfohlen."""
+    path_error = dw.check_paths(source, target)
+    if path_error:
+        raise ValueError(path_error)
     if config is None:
         config = dw.recommend_config(dw.analyze_vault(target))
     cfg_dict = {k: getattr(config, k) for k in _CONFIG_FIELDS}
@@ -851,9 +854,14 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             config.attachments_mode = "central"
         if args.no_frontmatter:
             config.add_frontmatter = False
-        job = add_job(args.name, args.source, args.target, config,
-                      poll_interval=args.poll_interval, max_workers=args.workers,
-                      build_vault=args.build_vault)
+        try:
+            job = add_job(args.name, args.source, args.target, config,
+                          poll_interval=args.poll_interval,
+                          max_workers=args.workers,
+                          build_vault=args.build_vault)
+        except ValueError as exc:
+            print(f"FEHLER: {exc}", file=sys.stderr)
+            return 2
         print(f"Job angelegt: {job.id}")
         print("Integrationsplan:")
         for line in dw.describe_plan(profile, config):

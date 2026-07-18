@@ -545,8 +545,11 @@ with tab_convert:
     analyze = col_analyze.button("Ziel analysieren", type="primary", width="stretch")
 
     if scan:
+        path_error = dw.check_paths(input_dir, output_dir)
         if not input_dir or not Path(input_dir).is_dir():
             st.error("Bitte einen gültigen Quellordner angeben.")
+        elif path_error:
+            st.error(path_error)
         else:
             files = dw.discover_files(
                 input_dir, exclude_dirs=(output_dir, archive_dir)
@@ -725,6 +728,10 @@ with tab_convert:
             # Sonst wuerde JEDE Datei einzeln an der fehlenden Engine
             # scheitern (real passiert: 3000+ identische Fehler).
             st.error(engine_warning)
+            st.stop()
+        path_error = dw.check_paths(input_dir, output_dir)
+        if path_error:
+            st.error(path_error)
             st.stop()
 
         input_root = Path(input_dir).resolve()
@@ -921,12 +928,17 @@ with tab_jobs:
             for line in dw.describe_plan(profile, config):
                 st.caption(f"– {line}")
             if st.button("Job speichern", key="save_job"):
-                new_job = jm.add_job(
-                    job_name, input_dir, output_dir, config,
-                    poll_interval=int(poll), max_workers=max_workers,
-                    build_vault=job_build,
-                )
-                st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
+                try:
+                    new_job = jm.add_job(
+                        job_name, input_dir, output_dir, config,
+                        poll_interval=int(poll), max_workers=max_workers,
+                        build_vault=job_build,
+                    )
+                except ValueError as exc:
+                    # z. B. Quell- und Zielordner identisch
+                    st.error(str(exc))
+                else:
+                    st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
 
     jobs = jm.load_jobs()
     if not jobs:
