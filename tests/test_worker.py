@@ -236,3 +236,17 @@ def test_reduced_config_keeps_other_settings():
     assert red.do_ocr is True and red.ocr_engine == "tesseract"
     assert not dw._is_reduced(cfg)
     assert dw._is_reduced(red)
+
+
+def test_streamlit_bare_mode_warning_muted():
+    """Die 'missing ScriptRunContext'-Logger sind stummgeschaltet (Windows-
+    Spawn-Worker wuerden die Warnung sonst pro Prozess ins Log schreiben)."""
+    import logging
+
+    dw._mute_streamlit_bare_mode_warning()
+    for name in (
+        "streamlit.runtime.scriptrunner_utils.script_run_context",
+        "streamlit.runtime.scriptrunner.script_run_context",
+    ):
+        logger = logging.getLogger(name)
+        assert not logger.isEnabledFor(logging.WARNING)
