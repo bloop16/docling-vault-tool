@@ -433,6 +433,23 @@ with st.sidebar:
         value=False,
         help="Nur für Scans ohne Textebene aktivieren – deutlich langsamer.",
     )
+    ocr_engine = "easyocr"
+    ocr_languages = "de,en"
+    if do_ocr:
+        ocr_engine = st.selectbox(
+            "OCR-Engine",
+            options=["easyocr", "tesseract", "rapidocr"],
+            index=0,
+            help="EasyOCR (Standard): Modelle werden von GitHub geladen. "
+            "Tesseract: erfordert lokale Installation, Sprachcodes wie "
+            "„deu,eng“. RapidOCR: lädt Modelle von modelscope.cn – in "
+            "vielen Netzen blockiert.",
+        )
+        ocr_languages = st.text_input(
+            "OCR-Sprachen",
+            value="deu,eng" if ocr_engine == "tesseract" else "de,en",
+            help="Kommaliste der Erkennungssprachen.",
+        )
 
     st.markdown(
         '<div class="side-label">Excel-Arbeitsmappen</div>', unsafe_allow_html=True
@@ -617,6 +634,8 @@ with tab_convert:
 
         config = dw.ConverterConfig(
             do_ocr=do_ocr,
+            ocr_engine=ocr_engine,
+            ocr_languages=ocr_languages,
             generate_picture_images=extract_images,
             images_scale=images_scale,
             do_table_structure=table_structure,

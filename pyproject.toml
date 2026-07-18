@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc2vault"
-version = "0.5.0"
+version = "0.6.0"
 description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in strukturierte Markdown-Vaults mit Docling"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,8 @@ dependencies = [
     "docling>=2.0",
     "streamlit>=1.48",
     "python-frontmatter>=1.0",
+    # OCR-Standard-Engine: Modelle von GitHub/JaidedAI statt modelscope.cn.
+    "easyocr>=1.7",
 ]
 
 [project.optional-dependencies]

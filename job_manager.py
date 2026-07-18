@@ -47,7 +47,7 @@ import docling_worker as dw
 
 # Felder von ConverterConfig, die pro Job gespeichert/rekonstruiert werden.
 _CONFIG_FIELDS = (
-    "do_ocr", "generate_picture_images", "images_scale", "do_table_structure",
+    "do_ocr", "ocr_engine", "ocr_languages", "generate_picture_images", "images_scale", "do_table_structure",
     "on_success", "archive_dir", "notes_subdir", "mirror_structure",
     "attachments_mode", "attachments_subdir", "add_frontmatter",
     "xlsx_sheet_limit", "xlsx_on_limit",
@@ -701,6 +701,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_add.add_argument("--workers", type=int, default=None)
     p_add.add_argument("--poll-interval", type=int, default=30)
     p_add.add_argument("--ocr", action="store_true")
+    p_add.add_argument("--ocr-engine", choices=["easyocr", "tesseract", "rapidocr"],
+                       default=None, help="OCR-Engine (Default easyocr)")
+    p_add.add_argument("--ocr-langs", default=None,
+                       help="OCR-Sprachen als Kommaliste (de,en)")
     p_add.add_argument("--no-images", action="store_true",
                        help="Keine eingebetteten Bilder extrahieren")
     p_add.add_argument("--images-scale", type=float, default=None,
@@ -749,6 +753,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         config = dw.recommend_config(profile)
         if args.ocr:
             config.do_ocr = True
+        if args.ocr_engine:
+            config.ocr_engine = args.ocr_engine
+        if args.ocr_langs:
+            config.ocr_languages = args.ocr_langs
         if args.no_images:
             config.generate_picture_images = False
         if args.images_scale is not None:

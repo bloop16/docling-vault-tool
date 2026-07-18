@@ -17,7 +17,8 @@ XLSX, PPTX)        Markdown+Bilder      Wikilinks, Frontmatter  INDEX.md
 ```
 
 - **Konvertierung** ([Docling](https://github.com/DS4SD/docling)): Überschriften
-  und Tabellen bleiben erhalten, eingebettete Bilder werden extrahiert.
+  und Tabellen bleiben erhalten, eingebettete Bilder werden extrahiert;
+  OCR für Scans über EasyOCR/Tesseract wählbar.
 - **Vault-Build**: Notizen landen in `Inbox/`, Bilder in `Attachments/` mit
   Obsidian-Wikilinks (`![[bild.png]]`), jede Notiz bekommt Frontmatter mit
   Rückverweis auf das Original. Namenskonflikte werden automatisch aufgelöst,
