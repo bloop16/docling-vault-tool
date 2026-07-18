@@ -247,6 +247,45 @@ def check_ocr_engine(config: "ConverterConfig") -> Optional[str]:
     return None
 
 
+def check_paths(
+    input_dir: os.PathLike | str | None,
+    output_dir: os.PathLike | str | None,
+) -> Optional[str]:
+    """Erkennt Quell-/Ziel-Konstellationen, die zwangslaeufig zu "0 Dateien
+    gefunden" fuehren; Fehlertext oder None.
+
+    Der Zielordner wird beim Scan bewusst ausgeschlossen, damit erzeugte
+    Markdown-Dateien nicht beim naechsten Lauf selbst als Quelle gelten.
+    Ist das Ziel identisch mit der Quelle (oder liegt die Quelle im Ziel),
+    schliesst das ALLES aus -- das muss als klare Meldung sichtbar sein
+    statt als stilles "0 unterstuetzte Dateien".
+
+    Erlaubt bleibt der umgekehrte Fall (Ziel als Unterordner der Quelle):
+    dann wird nur dieser Teilbereich ausgeschlossen.
+    """
+    if not input_dir or not output_dir:
+        return None
+    src = Path(input_dir).resolve()
+    dst = Path(output_dir).resolve()
+    if src == dst:
+        return (
+            "Quell- und Ziel-Ordner sind identisch. Der Ziel-Vault-Ordner "
+            "wird beim Scan ausgeschlossen, damit erzeugte Markdown-Dateien "
+            "nicht erneut als Quelle gelten – so würden 0 Dateien gefunden. "
+            "Bitte einen eigenen Zielordner wählen, z. B. einen "
+            "Nachbarordner („Hunter Vault“) oder einen Unterordner des "
+            "Quellordners („…\\Vault“)."
+        )
+    if src.is_relative_to(dst):
+        return (
+            "Der Quellordner liegt innerhalb des Ziel-Vault-Ordners – damit "
+            "würde der gesamte Quellbereich beim Scan ausgeschlossen "
+            "(0 Dateien). Bitte das Ziel außerhalb des Quellordners oder "
+            "als Unterordner des Quellordners wählen."
+        )
+    return None
+
+
 def build_converter(
     config: Optional[ConverterConfig] = None,
     pdf_backend: Optional[str] = None,
@@ -1296,6 +1335,9 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     output_dir = Path(args.output).resolve()
     if not input_root.is_dir():
         parser.error(f"Quellordner existiert nicht: {input_root}")
+    path_error = check_paths(input_root, output_dir)
+    if path_error:
+        parser.error(path_error)
     if args.on_success == "archive" and not args.archive_dir:
         parser.error("--on-success archive erfordert --archive-dir")
 

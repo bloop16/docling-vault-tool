@@ -424,6 +424,17 @@ lokalen Betrieb; alternativ den RapidOCR-Modellordner löschen
 (`.venv\Lib\site-packages\rapidocr\models\`) und mit funktionierendem
 Netzzugang erneut konvertieren.
 
+**„0 unterstützte Dateien gefunden", obwohl der Ordner voll ist:**
+Quell- und Ziel-Vault-Ordner zeigen auf denselben Ordner (oder die Quelle
+liegt im Ziel). Der Zielordner wird beim Scan bewusst ausgeschlossen, damit
+erzeugte Markdown-Dateien nicht beim nächsten Lauf selbst als Quelle gelten —
+sind beide identisch, wird dadurch alles ausgeschlossen. Dashboard, CLI und
+Job-Anlage erkennen diese Konstellation inzwischen und melden sie klar.
+Abhilfe: einen eigenen Zielordner wählen — entweder ein Nachbarordner
+(z. B. `…\Hunter Vault`) oder ein Unterordner des Quellordners
+(z. B. `…\Hunter DataBase\Vault`; der wird beim Scan automatisch
+ausgenommen).
+
 **Ordner lässt sich nicht per Maus wählen:** Der Button **„Durchsuchen…"**
 neben jedem Pfadfeld öffnet den nativen Ordnerdialog des Betriebssystems
 (wenn das Dashboard lokal läuft) bzw. einen eingebauten Ordnerbrowser (beim

@@ -323,3 +323,23 @@ def test_pdfium_fallback_rescues_refused_pdf(tmp_path, monkeypatch, fake_convert
     res2 = dw.convert_file_task(str(src))
     assert not res2.success
     assert res2.pdf_backend is None
+
+
+def test_check_paths_overlap(tmp_path):
+    """Quelle==Ziel bzw. Quelle im Ziel muss als klarer Fehler erscheinen
+    (real passiert: '0 unterstuetzte Dateien' ohne Erklaerung)."""
+    src = tmp_path / "daten"
+    src.mkdir()
+    # Identisch: haerteste Falle (Ziel wird beim Scan ausgeschlossen -> 0).
+    msg = dw.check_paths(src, src)
+    assert msg and "identisch" in msg
+    # Quelle innerhalb des Ziels: ebenfalls alles ausgeschlossen.
+    msg = dw.check_paths(src, tmp_path)
+    assert msg and "innerhalb" in msg
+    # Ziel als Unterordner der Quelle: erlaubt (nur Teilbereich ausgeschlossen).
+    assert dw.check_paths(src, src / "vault") is None
+    # Getrennte Ordner: erlaubt.
+    assert dw.check_paths(src, tmp_path / "woanders") is None
+    # Leere Angaben: keine Aussage.
+    assert dw.check_paths(None, src) is None
+    assert dw.check_paths(src, "") is None
