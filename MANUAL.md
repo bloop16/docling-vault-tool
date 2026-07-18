@@ -97,7 +97,13 @@ Excel-Sheet-Limit und den Umgang mit Originaldateien.
   werden eigene Dateien; `--images-scale` steuert die Auflösung (Default 2.0).
 - **Tabellenstruktur erkennen** (`--no-tables`): rekonstruiert Tabellen als
   Markdown; abgeschaltet ist die Verarbeitung schneller.
-- **OCR** (`--ocr`): nur für gescannte PDFs ohne Textebene — deutlich langsamer.
+- **OCR** (`--ocr`): nur für gescannte PDFs ohne Textebene — deutlich
+  langsamer. Engine wählbar (`--ocr-engine`, Seitenleiste): **EasyOCR**
+  (Standard — Modelle kommen von GitHub/JaidedAI, kein China-CDN),
+  **Tesseract** (lokal installiertes Tesseract; Sprachcodes wie `deu,eng`)
+  oder **RapidOCR** (Docling-Default; lädt PP-OCR-Modelle von
+  `modelscope.cn` — in vielen Netzen blockiert). Sprachen per
+  `--ocr-langs de,en`.
 
 **Excel-Arbeitsmappen:** Über das Sheet-Limit (`--xlsx-sheet-limit`, 0 = alle)
 lassen sich Mappen mit sehr vielen Blättern begrenzen. Bei Überschreitung
@@ -366,8 +372,9 @@ ausführen.
 Die RapidOCR-Modelldateien sind beschädigt — typischerweise weil der Download
 von `modelscope.cn` (China-CDN) im Firmen-/Heimnetz blockiert war und eine
 halbe Datei liegen blieb. Danach scheitert jeder OCR-Lauf an der kaputten
-Datei. Abhilfe: entweder **OCR deaktivieren** (Standard; nur für gescannte
-PDFs nötig) oder den Modellordner löschen
+Datei. Abhilfe: die Standard-Engine **EasyOCR** verwenden (lädt ihre
+Modelle von GitHub statt modelscope.cn) oder **Tesseract** für komplett
+lokalen Betrieb; alternativ den RapidOCR-Modellordner löschen
 (`.venv\Lib\site-packages\rapidocr\models\`) und mit funktionierendem
 Netzzugang erneut konvertieren.
 

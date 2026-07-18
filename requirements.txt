@@ -4,3 +4,4 @@
 docling>=2.0
 streamlit>=1.48
 python-frontmatter>=1.0
+easyocr>=1.7

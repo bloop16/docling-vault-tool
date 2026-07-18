@@ -60,6 +60,12 @@ class ConverterConfig:
     """
 
     do_ocr: bool = False
+    # OCR-Engine: "easyocr" (Standard; Modelle von GitHub/JaidedAI),
+    # "tesseract" (lokal installiertes Tesseract, Sprachcodes wie "deu,eng")
+    # oder "rapidocr" (Docling-Default; laedt PP-OCR-Modelle von
+    # modelscope.cn -- in vielen Netzen blockiert).
+    ocr_engine: str = "easyocr"
+    ocr_languages: str = "de,en"
     generate_picture_images: bool = True
     images_scale: float = 2.0
     do_table_structure: bool = True
@@ -110,6 +116,34 @@ class ConversionResult:
     moved_to: Optional[str] = None
 
 
+def _make_ocr_options(engine: str, languages: str):
+    """Baut die Docling-OCR-Optionen fuer die gewaehlte Engine.
+
+    Standard ist EasyOCR: pip-installierbar, Modelle kommen von GitHub
+    (JaidedAI) statt von modelscope.cn -- das RapidOCR-CDN ist in vielen
+    Firmen-/Heimnetzen blockiert und hinterlaesst dann kaputte Modelldateien.
+    ``languages`` ist eine Kommaliste ("de,en"; Tesseract nutzt eigene Codes
+    wie "deu,eng").
+    """
+    langs = [part.strip() for part in languages.split(",") if part.strip()]
+    if engine == "easyocr":
+        from docling.datamodel.pipeline_options import EasyOcrOptions
+
+        return EasyOcrOptions(lang=langs or ["de", "en"])
+    if engine == "tesseract":
+        from docling.datamodel.pipeline_options import TesseractCliOcrOptions
+
+        return TesseractCliOcrOptions(lang=langs or ["deu", "eng"])
+    if engine == "rapidocr":
+        from docling.datamodel.pipeline_options import RapidOcrOptions
+
+        # torch-Backend: onnxruntime ist nicht Teil der Installation.
+        return RapidOcrOptions(backend="torch")
+    raise ValueError(
+        f"Unbekannte OCR-Engine {engine!r} (erlaubt: easyocr, tesseract, rapidocr)"
+    )
+
+
 def build_converter(config: Optional[ConverterConfig] = None):
     """Erzeugt einen konfigurierten Docling ``DocumentConverter``.
 
@@ -129,6 +163,10 @@ def build_converter(config: Optional[ConverterConfig] = None):
     pipeline_options.do_table_structure = config.do_table_structure
     pipeline_options.generate_picture_images = config.generate_picture_images
     pipeline_options.images_scale = config.images_scale
+    if config.do_ocr:
+        pipeline_options.ocr_options = _make_ocr_options(
+            config.ocr_engine, config.ocr_languages
+        )
     if config.do_table_structure:
         # Zellen-Matching verbessert die Tabellenrekonstruktion.
         pipeline_options.table_structure_options.do_cell_matching = True
@@ -447,9 +485,9 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
          "file exists but is invalid", "modelscope", "rapidocr"),
         "ocr-modelle",
         "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download "
-        "(modelscope.cn) ist oft blockiert. OCR deaktivieren oder den "
-        "RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang "
-        "erneut laden.",
+        "(modelscope.cn) ist oft blockiert. Auf die Standard-Engine EasyOCR "
+        "wechseln (Modelle von GitHub) oder den RapidOCR-Modellordner löschen "
+        "und mit funktionierendem Netzzugang erneut laden.",
     ),
     (
         ("terminated abruptly", "brokenprocesspool", "prozess abgestürzt"),
@@ -872,6 +910,18 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         help="OCR aktivieren (langsam; nur fuer gescannte PDFs)",
     )
     parser.add_argument(
+        "--ocr-engine",
+        choices=["easyocr", "tesseract", "rapidocr"],
+        default="easyocr",
+        help="OCR-Engine (Default easyocr: Modelle von GitHub statt "
+        "modelscope.cn; tesseract erfordert lokale Installation)",
+    )
+    parser.add_argument(
+        "--ocr-langs",
+        default="de,en",
+        help="OCR-Sprachen als Kommaliste (easyocr: de,en; tesseract: deu,eng)",
+    )
+    parser.add_argument(
         "--no-images",
         action="store_true",
         help="Keine eingebetteten Bilder extrahieren (reine Textkonvertierung)",
@@ -970,6 +1020,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     profile = analyze_vault(output_dir)
     config = recommend_config(profile)
     config.do_ocr = args.ocr
+    config.ocr_engine = args.ocr_engine
+    config.ocr_languages = args.ocr_langs
     config.generate_picture_images = not args.no_images
     config.images_scale = args.images_scale
     config.do_table_structure = not args.no_tables

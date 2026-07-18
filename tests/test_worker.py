@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 import docling_worker as dw
 
 
@@ -125,6 +127,16 @@ def test_error_classification_windows_first_run():
     assert dw._classify_error(
         "A process in the process pool was terminated abruptly"
     )[0] == "prozessabsturz"
+
+
+def test_ocr_engine_config_plumbing():
+    """Engine/Sprachen sind konfigurierbar; unbekannte Engine bricht sauber ab."""
+    cfg = dw.ConverterConfig()
+    assert cfg.ocr_engine == "easyocr"        # Standard: keine modelscope-Modelle
+    assert cfg.ocr_languages == "de,en"
+
+    with pytest.raises(ValueError):
+        dw._make_ocr_options("quatsch", "de")
 
 
 def test_unreadable_source_is_classified(tmp_path, fake_converter):
