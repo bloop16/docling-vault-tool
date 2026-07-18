@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc2vault"
-version = "0.6.0"
+version = "0.6.1"
 description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in strukturierte Markdown-Vaults mit Docling"
 readme = "README.md"
 requires-python = ">=3.10"

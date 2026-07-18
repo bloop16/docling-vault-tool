@@ -114,6 +114,56 @@ class ConversionResult:
     error_detail: Optional[str] = None    # voller Traceback (echte Ursache)
     # Nachbearbeitung des Originals (archive/delete):
     moved_to: Optional[str] = None
+    # True, wenn mit speicherschonenden Einstellungen konvertiert wurde
+    # (Riesenseiten-Erkennung oder automatischer Wiederholungsversuch).
+    reduced_mode: bool = False
+
+
+# Seitenflaeche in PDF-Punkten, ab der eine Seite als "riesig" gilt
+# (~A1 und groesser; CAD-Zeichnungen). Solche Seiten sprengen beim Rendern
+# mit voller Bildskalierung den Speicher (std::bad_alloc im Preprocess).
+HUGE_PAGE_AREA_PT2 = 2_500_000
+
+
+def _reduced_config(config: "ConverterConfig") -> "ConverterConfig":
+    """Speicherschonende Variante einer Konfiguration.
+
+    Bildskalierung 1.0 und keine Bildextraktion -- die Hauptspeicherfresser
+    beim Rendern riesiger Seiten. Alle uebrigen Einstellungen (OCR, Tabellen,
+    Ablage) bleiben erhalten.
+    """
+    from dataclasses import replace
+
+    return replace(config, images_scale=1.0, generate_picture_images=False)
+
+
+def _is_reduced(config: "ConverterConfig") -> bool:
+    return config.images_scale <= 1.0 and not config.generate_picture_images
+
+
+def has_huge_pages(
+    path: os.PathLike | str,
+    threshold: float = HUGE_PAGE_AREA_PT2,
+    max_pages_checked: int = 50,
+) -> bool:
+    """True, wenn eine PDF Seiten mit riesiger Flaeche enthaelt (billig via
+    pypdfium2, nur Seitengroessen, kein Rendern)."""
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            for i in range(min(len(pdf), max_pages_checked)):
+                page = pdf[i]
+                width, height = page.get_size()
+                page.close()
+                if width * height > threshold:
+                    return True
+        finally:
+            pdf.close()
+    except Exception:  # noqa: BLE001 -- im Zweifel normaler Pfad
+        return False
+    return False
 
 
 def _make_ocr_options(engine: str, languages: str):
@@ -773,6 +823,7 @@ def convert_single_file(
 # der teure Modell-/Pipeline-Aufbau passiert so nur einmal pro Prozess.
 
 _WORKER_CONVERTER = None
+_WORKER_CONVERTER_REDUCED = None
 _WORKER_CONFIG: Optional[ConverterConfig] = None
 _WORKER_OUTPUT: Optional[Path] = None
 _WORKER_ROOT: Optional[Path] = None
@@ -780,22 +831,48 @@ _WORKER_ROOT: Optional[Path] = None
 
 def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> None:
     """Initialisiert einen Worker-Prozess (baut den Converter einmalig)."""
-    global _WORKER_CONVERTER, _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
+    global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED
+    global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
     _WORKER_CONVERTER = build_converter(config)
+    _WORKER_CONVERTER_REDUCED = None   # lazy, nur wenn Riesenseiten auftauchen
 
 
 def convert_file_task(source_path: str) -> ConversionResult:
-    """Pool-Task: konvertiert eine Datei mit dem Prozess-lokalen Converter."""
-    return convert_single_file(
+    """Pool-Task: konvertiert eine Datei mit dem Prozess-lokalen Converter.
+
+    PDFs mit riesigen Seiten (CAD-Zeichnungen u. ae.) werden automatisch mit
+    speicherschonenden Einstellungen konvertiert, statt den Worker mit
+    ``std::bad_alloc`` zu sprengen.
+    """
+    global _WORKER_CONVERTER_REDUCED
+
+    config = _WORKER_CONFIG
+    converter = _WORKER_CONVERTER
+    reduced = False
+    if (
+        config is not None
+        and not _is_reduced(config)
+        and source_path.lower().endswith(".pdf")
+        and has_huge_pages(source_path)
+    ):
+        if _WORKER_CONVERTER_REDUCED is None:
+            _WORKER_CONVERTER_REDUCED = build_converter(_reduced_config(config))
+        converter = _WORKER_CONVERTER_REDUCED
+        config = _reduced_config(config)
+        reduced = True
+
+    result = convert_single_file(
         source_path,
         _WORKER_OUTPUT,
         input_root=_WORKER_ROOT,
-        config=_WORKER_CONFIG,
-        converter=_WORKER_CONVERTER,
+        config=config,
+        converter=converter,
     )
+    result.reduced_mode = reduced or result.reduced_mode
+    return result
 
 
 # Wie oft eine Datei, die beim Verarbeiten einen Worker-Absturz miterlebt hat,
@@ -830,6 +907,9 @@ def run_conversion_batch(
     total = len(remaining)
     crash_seen: dict[str, int] = {}
     results: list[ConversionResult] = []
+    # Speicher-/Absturzfaelle bekommen am Ende automatisch einen zweiten
+    # Versuch mit reduzierten Einstellungen in einem isolierten Einzelprozess.
+    retry_reduced: list[tuple[str, ConversionResult]] = []
     done = 0
 
     def _emit(res: ConversionResult) -> None:
@@ -838,6 +918,12 @@ def run_conversion_batch(
         results.append(res)
         if progress:
             progress(done, total, res)
+
+    def _collect_failure(res: ConversionResult) -> None:
+        if res.error_category in ("speicher", "prozessabsturz"):
+            retry_reduced.append((res.source_path, res))
+        else:
+            _emit(res)
 
     while remaining:
         crashed: list[str] = []
@@ -851,38 +937,72 @@ def run_conversion_batch(
                 for future in as_completed(futures):
                     src = futures[future]
                     try:
-                        _emit(future.result())
+                        res = future.result()
                     except BrokenProcessPool:
                         crashed.append(src)
+                        continue
                     except Exception as exc:  # noqa: BLE001 -- Batch weiterfuehren
                         detail = traceback.format_exc()
                         category, hint = _classify_error(f"{exc}\n{detail}")
-                        _emit(ConversionResult(
+                        _collect_failure(ConversionResult(
                             source_path=src, success=False,
                             error=f"Pool-Fehler: {exc}",
                             error_category=category, error_hint=hint,
                             error_detail=detail.strip(),
                         ))
+                        continue
+                    if res.success:
+                        _emit(res)
+                    else:
+                        _collect_failure(res)
         except BrokenProcessPool:
             # Bruch beim Pool-Shutdown: alle noch nicht gemeldeten Dateien
             # gelten als potenziell betroffen.
-            reported = {r.source_path for r in results}
-            crashed = [f for f in remaining if f not in crashed and f not in reported]
+            handled = {r.source_path for r in results}
+            handled |= {src for src, _ in retry_reduced}
+            crashed = [f for f in remaining if f not in crashed and f not in handled]
 
         next_round: list[str] = []
         for src in crashed:
             crash_seen[src] = crash_seen.get(src, 0) + 1
             if crash_seen[src] >= _CRASH_RETRY_LIMIT:
                 category, hint = _classify_error("prozess abgestürzt")
-                _emit(ConversionResult(
+                retry_reduced.append((src, ConversionResult(
                     source_path=src, success=False,
                     error="Worker-Prozess ist beim Verarbeiten abgestürzt "
                     "(vermutlich Speicher).",
                     error_category=category, error_hint=hint,
-                ))
+                )))
             else:
                 next_round.append(src)
         remaining = next_round
+
+    # Zweiter Versuch mit reduzierten Einstellungen (Bildskalierung 1.0,
+    # ohne Bildextraktion), sequenziell und isoliert -- maximaler Speicher
+    # fuer die eine Problemdatei, ein erneuter Absturz bleibt eingedaemmt.
+    reduced = _reduced_config(config)
+    for src, first_fail in retry_reduced:
+        retry_result: Optional[ConversionResult] = None
+        try:
+            with ProcessPoolExecutor(
+                max_workers=1,
+                initializer=init_worker,
+                initargs=(reduced, str(output_dir), str(input_root)),
+            ) as pool:
+                retry_result = pool.submit(convert_file_task, src).result()
+        except (BrokenProcessPool, Exception):  # noqa: BLE001
+            retry_result = None
+        if retry_result is not None and retry_result.success:
+            retry_result.reduced_mode = True
+            _emit(retry_result)
+        else:
+            first_fail.error_hint = (
+                (first_fail.error_hint or "").rstrip() +
+                " Der automatische Wiederholungsversuch mit reduzierten "
+                "Einstellungen (Bildskalierung 1.0, ohne Bildextraktion) "
+                "ist ebenfalls fehlgeschlagen."
+            ).strip()
+            _emit(first_fail)
 
     return results
 
@@ -1068,21 +1188,25 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n{total} Dateien gefunden. Starte mit {args.workers} Prozess(en)...")
     ok = 0
+    reduced_count = 0
     failed: list[ConversionResult] = []
     start = time.perf_counter()
 
     def _cli_progress(done: int, total_n: int, res: ConversionResult) -> None:
-        nonlocal ok
+        nonlocal ok, reduced_count
         if res.success:
             ok += 1
+            if res.reduced_mode:
+                reduced_count += 1
         else:
             failed.append(res)
         elapsed = time.perf_counter() - start
         rate = done / elapsed if elapsed else 0
         eta = (total_n - done) / rate if rate else 0
+        marker = "  [reduziert]" if res.reduced_mode else ""
         print(
             f"[{done}/{total_n}] ok={ok} fehler={len(failed)} "
-            f"ETA={eta:6.0f}s  {Path(res.source_path).name}",
+            f"ETA={eta:6.0f}s  {Path(res.source_path).name}{marker}",
             flush=True,
         )
 
@@ -1092,6 +1216,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     )
 
     print(f"\nFertig: {ok} erfolgreich, {len(failed)} fehlgeschlagen.")
+    if reduced_count:
+        print(f"  Davon {reduced_count} mit reduzierten Einstellungen "
+              "(riesige Seiten, z. B. CAD-Plaene: Bildskalierung 1.0, "
+              "ohne Bildextraktion).")
     if failed:
         by_cat: dict[str, int] = {}
         for r in failed:

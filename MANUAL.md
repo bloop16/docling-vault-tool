@@ -352,13 +352,25 @@ Für kleine Mengen ohne gemountete Ordner (Dashboard-Tab):
 
 ## 13. Fehlerbehebung (Troubleshooting)
 
-**Viele Dateien scheitern als „prozessabsturz" / „terminated abruptly":**
-Ein einzelnes Problemdokument (meist eine riesige/komplexe PDF, z. B.
-CAD-Zeichnung) hat einen Worker-Prozess mit Speicherfehler (`std::bad_alloc`)
-zum Absturz gebracht. doc2vault startet den Pool automatisch neu und
-verarbeitet die restlichen Dateien weiter; nur die Verursacher werden
-markiert. Abhilfe für die markierten Dateien: parallele Prozesse auf 1–2 und
-die Bildauflösung auf 1.0 reduzieren, Datei einzeln erneut konvertieren.
+**„speicher" / „prozessabsturz" / `std::bad_alloc`:**
+Meist eine PDF mit riesigen Seiten (CAD-Zeichnung, Plan im A1-/A0-Format) —
+das Rendern in voller Auflösung sprengt den Arbeitsspeicher des
+Worker-Prozesses. doc2vault fängt das inzwischen dreifach ab:
+
+1. **Vorab-Erkennung**: PDFs mit riesigen Seitenflächen werden automatisch
+   mit speicherschonenden Einstellungen konvertiert (Bildskalierung 1.0,
+   ohne Bildextraktion) — die restliche Konfiguration (OCR, Tabellen,
+   Ablage) bleibt aktiv.
+2. **Absturz-Isolation**: Reißt ein Worker doch ab, startet der Pool neu
+   und die übrigen Dateien laufen weiter — ein Problemdokument reißt keinen
+   Batch mehr mit.
+3. **Automatischer Zweitversuch**: Dateien, die trotzdem mit Speicherfehler
+   oder Absturz scheitern, werden am Ende des Laufs einzeln in einem
+   isolierten Prozess mit reduzierten Einstellungen erneut versucht.
+
+Gerettete Dateien erscheinen im Ergebnis als „mit reduzierten Einstellungen
+konvertiert" (CLI: `[reduziert]`). Scheitert auch der Zweitversuch, hilft
+nur mehr RAM oder das Dokument vorab aufzuteilen/zu verkleinern.
 
 **„cloud-platzhalter" / `unexpected EOF, expected N more bytes`:**
 Die Quelldatei liegt in OneDrive nur als Platzhalter vor („Dateien bei

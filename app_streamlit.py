@@ -711,7 +711,7 @@ with tab_convert:
         ph_eta = m4.empty()
         ph_current = st.empty()
 
-        stats = {"ok": 0, "moved": 0, "images": 0}
+        stats = {"ok": 0, "moved": 0, "images": 0, "reduced": 0}
         failures: list = []
         start_time = time.perf_counter()
 
@@ -721,6 +721,8 @@ with tab_convert:
                 stats["images"] += res.num_images
                 if res.moved_to:
                     stats["moved"] += 1
+                if getattr(res, "reduced_mode", False):
+                    stats["reduced"] += 1
             else:
                 failures.append(res)
 
@@ -748,6 +750,7 @@ with tab_convert:
             "ok": stats["ok"],
             "images": stats["images"],
             "moved": stats["moved"],
+            "reduced": stats["reduced"],
             "on_success": on_success,
             "failures": failures,
         }
@@ -790,6 +793,12 @@ with tab_convert:
                 else "ins Archiv verschoben"
             )
             st.caption(f"{last['moved']} Originaldatei(en) {verb}.")
+        if last.get("reduced"):
+            st.caption(
+                f"{last['reduced']} Datei(en) mit reduzierten Einstellungen "
+                "konvertiert (riesige Seiten, z. B. CAD-Pläne: "
+                "Bildskalierung 1.0, ohne Bildextraktion)."
+            )
         build = last.get("build")
         if build:
             st.caption(

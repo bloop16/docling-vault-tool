@@ -189,3 +189,50 @@ def test_post_action_archive_and_delete(tmp_path, fake_converter, boom_converter
                                   config=cfg2, converter=boom_converter)
     assert not res3.success
     assert src3.exists()
+
+
+# --- Riesenseiten-Erkennung (std::bad_alloc-Praevention) --------------------
+
+def _write_pdf(path, width, height):
+    """Minimal gueltige Einseiten-PDF mit gegebener MediaBox (inkl. xref)."""
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] >>".encode(),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 4\n0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n"
+            + str(xref_pos).encode() + b"\n%%EOF\n")
+    path.write_bytes(bytes(out))
+
+
+def test_has_huge_pages_detection(tmp_path):
+    pytest.importorskip("pypdfium2")
+    a0 = tmp_path / "cad_a0.pdf"          # A0 quer: 3370x2384 pt
+    _write_pdf(a0, 3370, 2384)
+    a4 = tmp_path / "brief_a4.pdf"        # A4 hoch: 595x842 pt
+    _write_pdf(a4, 595, 842)
+
+    assert dw.has_huge_pages(a0) is True
+    assert dw.has_huge_pages(a4) is False
+    # Kaputte/fehlende Dateien duerfen die Erkennung nicht sprengen.
+    assert dw.has_huge_pages(tmp_path / "gibtsnicht.pdf") is False
+
+
+def test_reduced_config_keeps_other_settings():
+    cfg = dw.ConverterConfig(do_ocr=True, ocr_engine="tesseract",
+                             images_scale=2.0, generate_picture_images=True)
+    red = dw._reduced_config(cfg)
+    assert red.images_scale == 1.0
+    assert red.generate_picture_images is False
+    assert red.do_ocr is True and red.ocr_engine == "tesseract"
+    assert not dw._is_reduced(cfg)
+    assert dw._is_reduced(red)
