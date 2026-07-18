@@ -250,3 +250,76 @@ def test_streamlit_bare_mode_warning_muted():
     ):
         logger = logging.getLogger(name)
         assert not logger.isEnabledFor(logging.WARNING)
+
+
+# --- OCR-Engine-Vorabpruefung & Fehlerklassifizierung (Realtest-Lauf 2) -----
+
+def test_check_ocr_engine(monkeypatch):
+    cfg = dw.ConverterConfig(do_ocr=True, ocr_engine="tesseract")
+    monkeypatch.setattr(dw.shutil, "which", lambda name: None)
+    warning = dw.check_ocr_engine(cfg)
+    assert warning and "Tesseract" in warning
+    monkeypatch.setattr(dw.shutil, "which", lambda name: r"C:\tesseract.exe")
+    assert dw.check_ocr_engine(cfg) is None
+    # Ohne OCR bzw. mit EasyOCR gibt es nichts vorab zu pruefen.
+    assert dw.check_ocr_engine(dw.ConverterConfig(
+        do_ocr=False, ocr_engine="tesseract")) is None
+    assert dw.check_ocr_engine(dw.ConverterConfig(
+        do_ocr=True, ocr_engine="easyocr")) is None
+
+
+def test_error_classification_second_real_run():
+    """Fehlerbilder aus dem zweiten Windows-Reallauf (3030er-CSV)."""
+    cat, hint = dw._classify_error(
+        "RuntimeError: Tesseract is not available, aborting: [WinError 2] "
+        "Das System kann die angegebene Datei nicht finden Install tesseract"
+    )
+    assert cat == "ocr-engine"
+    assert "EasyOCR" in hint
+
+    cat, hint = dw._classify_error(
+        "ConversionError: Conversion failed for: C:\\pfad\\datei.pdf"
+    )
+    assert cat == "pdf-parser"
+    assert "pypdfium" in hint
+
+    cat, _ = dw._classify_error("Inconsistent number of pages: 16!=-1")
+    assert cat == "pdf-parser"
+
+
+def test_pdfium_fallback_rescues_refused_pdf(tmp_path, monkeypatch, fake_converter):
+    """docling-parse lehnt ab -> automatischer zweiter Versuch mit pypdfium."""
+    src_root = tmp_path / "in"
+    src_root.mkdir()
+    out = tmp_path / "vault"
+    src = src_root / "abgelehnt.pdf"
+    src.write_text("x")
+
+    class _RefusingConverter:
+        def convert(self, source):
+            raise RuntimeError(f"Conversion failed for: {source}")
+
+    def _fake_build(config=None, pdf_backend=None):
+        return fake_converter if pdf_backend == "pypdfium" else _RefusingConverter()
+
+    monkeypatch.setattr(dw, "build_converter", _fake_build)
+    dw.init_worker(dw.ConverterConfig(), str(out), str(src_root))
+
+    res = dw.convert_file_task(str(src))
+    assert res.success
+    assert res.pdf_backend == "pypdfium"
+
+    # Nicht-Parser-Fehler loesen KEINEN pypdfium-Versuch aus.
+    class _OtherErrorConverter:
+        def convert(self, source):
+            raise RuntimeError("kaputt")
+
+    def _fake_build_other(config=None, pdf_backend=None):
+        assert pdf_backend is None, "unerwarteter pypdfium-Fallback"
+        return _OtherErrorConverter()
+
+    monkeypatch.setattr(dw, "build_converter", _fake_build_other)
+    dw.init_worker(dw.ConverterConfig(), str(out), str(src_root))
+    res2 = dw.convert_file_task(str(src))
+    assert not res2.success
+    assert res2.pdf_backend is None

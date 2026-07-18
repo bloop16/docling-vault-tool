@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -164,3 +165,52 @@ def test_reduced_retry_rescues_memory_failure(tmp_path, monkeypatch):
     by_path = {Path(r.source_path).name: r for r in results}
     assert by_path["huge.pdf"].success
     assert by_path["huge.pdf"].reduced_mode
+
+# --- Heartbeat & Sofort-Abbruch ---------------------------------------------
+
+def _task_slowish(source_path: str) -> dw.ConversionResult:
+    time.sleep(1.5)
+    return _task_ok(source_path)
+
+
+def _task_sleep_forever(source_path: str) -> dw.ConversionResult:
+    if "schlaf" in source_path:
+        time.sleep(120)
+    return _task_ok(source_path)
+
+
+class _CancelSignal(BaseException):
+    """Simuliert Streamlits Skript-Unterbrechung (kein Exception-Abkoemmling)."""
+
+
+def test_heartbeat_fires_while_workers_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(dw, "init_worker", _noop_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_slowish)
+    files = _paths(tmp_path, ["a.pdf"])
+
+    beats = []
+    results = dw.run_conversion_batch(
+        files, dw.ConverterConfig(), tmp_path, tmp_path, max_workers=1,
+        heartbeat=lambda: beats.append(1),
+    )
+    assert len(results) == 1 and results[0].success
+    assert beats, "Heartbeat muss waehrend laufender Worker ticken"
+
+
+def test_abort_terminates_running_workers_quickly(tmp_path, monkeypatch):
+    """BaseException aus progress (= Abbrechen-Klick) beendet Worker sofort,
+    statt minutenlang auf angefangene Dateien zu warten."""
+    monkeypatch.setattr(dw, "init_worker", _noop_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_sleep_forever)
+    files = _paths(tmp_path, ["fertig.pdf", "schlaf.pdf"])
+
+    def _progress(done, total, res):
+        raise _CancelSignal()
+
+    t0 = time.perf_counter()
+    with pytest.raises(_CancelSignal):
+        dw.run_conversion_batch(
+            files, dw.ConverterConfig(), tmp_path, tmp_path, max_workers=2,
+            progress=_progress,
+        )
+    assert time.perf_counter() - t0 < 20, "Abbruch darf nicht auf den 120s-Schlaefer warten"

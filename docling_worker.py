@@ -117,6 +117,8 @@ class ConversionResult:
     # True, wenn mit speicherschonenden Einstellungen konvertiert wurde
     # (Riesenseiten-Erkennung oder automatischer Wiederholungsversuch).
     reduced_mode: bool = False
+    # "pypdfium", wenn erst der alternative PDF-Parser die Datei laden konnte.
+    pdf_backend: Optional[str] = None
 
 
 def _mute_streamlit_bare_mode_warning() -> None:
@@ -135,7 +137,19 @@ def _mute_streamlit_bare_mode_warning() -> None:
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
+def _mute_torch_pin_memory_warning() -> None:
+    """torch meldet auf CPU-only-Systemen bei jedem DataLoader "'pin_memory'
+    argument is set as true but no accelerator is found". CPU-Betrieb ist
+    fuer doc2vault der Normalfall, die Meldung hat keine Konsequenz."""
+    import warnings
+
+    warnings.filterwarnings(
+        "ignore", message=r".*pin_memory.*no accelerator.*"
+    )
+
+
 _mute_streamlit_bare_mode_warning()
+_mute_torch_pin_memory_warning()
 
 
 # Seitenflaeche in PDF-Punkten, ab der eine Seite als "riesig" gilt
@@ -213,12 +227,39 @@ def _make_ocr_options(engine: str, languages: str):
     )
 
 
-def build_converter(config: Optional[ConverterConfig] = None):
+def check_ocr_engine(config: "ConverterConfig") -> Optional[str]:
+    """Vorab-Pruefung der OCR-Engine; Warntext oder None.
+
+    Wichtigster Fall: Tesseract ist als CLI-Aufruf realisiert -- fehlt die
+    Installation, scheitert sonst JEDE Datei des Laufs einzeln mit derselben
+    Meldung (real passiert: 3000+ Fehler statt einem klaren Hinweis vorab).
+    """
+    if not config.do_ocr:
+        return None
+    if config.ocr_engine == "tesseract" and shutil.which("tesseract") is None:
+        return (
+            "Die gewählte OCR-Engine Tesseract ist auf diesem Rechner nicht "
+            "installiert (Befehl „tesseract“ nicht gefunden). Entweder die "
+            "Standard-Engine EasyOCR wählen oder Tesseract installieren "
+            "(Windows: UB-Mannheim-Installer, Sprache „German“ mitwählen) "
+            "und neu starten."
+        )
+    return None
+
+
+def build_converter(
+    config: Optional[ConverterConfig] = None,
+    pdf_backend: Optional[str] = None,
+):
     """Erzeugt einen konfigurierten Docling ``DocumentConverter``.
 
     Der Import von Docling passiert bewusst lazy (erst hier), damit das Modul
     auch ohne installiertes Docling importierbar bleibt -- z. B. fuer
     ``discover_files`` oder die Unit-Tests der Pfadlogik.
+
+    ``pdf_backend="pypdfium"`` verwendet den alternativen pypdfium-Parser
+    statt docling-parse -- Fallback fuer PDFs, die docling-parse mit
+    "Inconsistent number of pages"/"not valid" ablehnt.
     """
     if config is None:
         config = ConverterConfig()
@@ -240,9 +281,15 @@ def build_converter(config: Optional[ConverterConfig] = None):
         # Zellen-Matching verbessert die Tabellenrekonstruktion.
         pipeline_options.table_structure_options.do_cell_matching = True
 
+    pdf_option_kwargs: dict = {"pipeline_options": pipeline_options}
+    if pdf_backend == "pypdfium":
+        from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
+
+        pdf_option_kwargs["backend"] = PyPdfiumDocumentBackend
+
     return DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+            InputFormat.PDF: PdfFormatOption(**pdf_option_kwargs),
         }
     )
 
@@ -559,6 +606,23 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
         "und mit funktionierendem Netzzugang erneut laden.",
     ),
     (
+        ("tesseract is not available", "tesseract_cmd", "tesserocr"),
+        "ocr-engine",
+        "Die gewählte OCR-Engine Tesseract ist auf diesem Rechner nicht "
+        "installiert oder nicht im PATH. Entweder in der Seitenleiste auf "
+        "die Standard-Engine EasyOCR wechseln oder Tesseract installieren "
+        "(Windows: UB-Mannheim-Installer, Sprache „German“ mitwählen) und "
+        "das Dashboard neu starten.",
+    ),
+    (
+        ("inconsistent number of pages", "conversion failed for"),
+        "pdf-parser",
+        "Der Standard-PDF-Parser (docling-parse) konnte das Dokument nicht "
+        "laden. doc2vault versucht solche PDFs automatisch erneut mit dem "
+        "alternativen pypdfium-Parser – schlägt auch das fehl, ist die Datei "
+        "vermutlich beschädigt oder verwendet ein exotisches PDF-Format.",
+    ),
+    (
         ("terminated abruptly", "brokenprocesspool", "prozess abgestürzt"),
         "prozessabsturz",
         "Ein Konvertierungsprozess ist abgestürzt – meist Speicher bei sehr "
@@ -843,6 +907,7 @@ def convert_single_file(
 
 _WORKER_CONVERTER = None
 _WORKER_CONVERTER_REDUCED = None
+_WORKER_CONVERTER_PDFIUM = None
 _WORKER_CONFIG: Optional[ConverterConfig] = None
 _WORKER_OUTPUT: Optional[Path] = None
 _WORKER_ROOT: Optional[Path] = None
@@ -850,14 +915,17 @@ _WORKER_ROOT: Optional[Path] = None
 
 def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> None:
     """Initialisiert einen Worker-Prozess (baut den Converter einmalig)."""
-    global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED
+    global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED, _WORKER_CONVERTER_PDFIUM
     global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
     _mute_streamlit_bare_mode_warning()
+    _mute_torch_pin_memory_warning()
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
     _WORKER_CONVERTER = build_converter(config)
-    _WORKER_CONVERTER_REDUCED = None   # lazy, nur wenn Riesenseiten auftauchen
+    # Beide Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
+    _WORKER_CONVERTER_REDUCED = None
+    _WORKER_CONVERTER_PDFIUM = None
 
 
 def convert_file_task(source_path: str) -> ConversionResult:
@@ -892,12 +960,58 @@ def convert_file_task(source_path: str) -> ConversionResult:
         converter=converter,
     )
     result.reduced_mode = reduced or result.reduced_mode
+
+    # Fallback-Parser: docling-parse lehnt manche real existierenden PDFs mit
+    # "Inconsistent number of pages: N!=-1" / "Input document is not valid"
+    # ab (generischer ConversionError "Conversion failed for: ..."). pypdfium
+    # laedt dieselben Dateien meist problemlos -> einmaliger zweiter Versuch.
+    global _WORKER_CONVERTER_PDFIUM
+    if (
+        not result.success
+        and source_path.lower().endswith(".pdf")
+        and "conversion failed for" in (result.error or "").lower()
+    ):
+        try:
+            if _WORKER_CONVERTER_PDFIUM is None:
+                _WORKER_CONVERTER_PDFIUM = build_converter(
+                    config, pdf_backend="pypdfium"
+                )
+            retry = convert_single_file(
+                source_path,
+                _WORKER_OUTPUT,
+                input_root=_WORKER_ROOT,
+                config=config,
+                converter=_WORKER_CONVERTER_PDFIUM,
+            )
+        except Exception:  # noqa: BLE001 -- urspruengliches Ergebnis behalten
+            retry = None
+        if retry is not None and retry.success:
+            retry.reduced_mode = result.reduced_mode
+            retry.pdf_backend = "pypdfium"
+            return retry
     return result
 
 
 # Wie oft eine Datei, die beim Verarbeiten einen Worker-Absturz miterlebt hat,
 # erneut versucht wird, bevor sie endgueltig als fehlgeschlagen gilt.
 _CRASH_RETRY_LIMIT = 2
+
+
+def _abort_pool(pool) -> None:
+    """Sofort-Stopp eines Pools: laufende Worker beenden statt auf sie zu
+    warten. Noetig fuer den Abbrechen-Button im Dashboard und Strg+C in der
+    CLI -- das normale ``shutdown(wait=True)`` wuerde sonst minutenlang auf
+    angefangene Konvertierungen warten."""
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # noqa: BLE001
+        pass
+    procs = getattr(pool, "_processes", None) or {}
+    for proc in list(procs.values()):
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def run_conversion_batch(
@@ -907,6 +1021,7 @@ def run_conversion_batch(
     input_root: os.PathLike | str,
     max_workers: int,
     progress=None,
+    heartbeat=None,
 ) -> list[ConversionResult]:
     """Konvertiert eine Dateiliste parallel und uebersteht Worker-Abstuerze.
 
@@ -919,8 +1034,13 @@ def run_conversion_batch(
     waren, werden als "prozessabsturz" markiert statt endlos wiederholt.
 
     ``progress(done, total, result)`` wird fuer jedes Ergebnis aufgerufen.
+    ``heartbeat()`` wird ~sekuendlich aufgerufen, solange Worker beschaeftigt
+    sind -- das Dashboard nutzt das als Punkt, an dem ein Abbrechen-Klick
+    greift (Streamlit unterbricht Skripte nur an UI-Aufrufen). Eine aus
+    ``progress``/``heartbeat`` aufsteigende BaseException (Streamlit-Rerun,
+    KeyboardInterrupt) beendet die laufenden Worker sofort.
     """
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from concurrent.futures.process import BrokenProcessPool
 
     remaining = [str(f) for f in files]
@@ -947,40 +1067,58 @@ def run_conversion_batch(
 
     while remaining:
         crashed: list[str] = []
+        pool = ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=init_worker,
+            initargs=(config, str(output_dir), str(input_root)),
+        )
         try:
-            with ProcessPoolExecutor(
-                max_workers=max_workers,
-                initializer=init_worker,
-                initargs=(config, str(output_dir), str(input_root)),
-            ) as pool:
+            try:
                 futures = {pool.submit(convert_file_task, f): f for f in remaining}
-                for future in as_completed(futures):
-                    src = futures[future]
-                    try:
-                        res = future.result()
-                    except BrokenProcessPool:
-                        crashed.append(src)
+                pending = set(futures)
+                while pending:
+                    done_now, pending = wait(
+                        pending, timeout=1.0, return_when=FIRST_COMPLETED
+                    )
+                    if not done_now:
+                        if heartbeat:
+                            heartbeat()
                         continue
-                    except Exception as exc:  # noqa: BLE001 -- Batch weiterfuehren
-                        detail = traceback.format_exc()
-                        category, hint = _classify_error(f"{exc}\n{detail}")
-                        _collect_failure(ConversionResult(
-                            source_path=src, success=False,
-                            error=f"Pool-Fehler: {exc}",
-                            error_category=category, error_hint=hint,
-                            error_detail=detail.strip(),
-                        ))
-                        continue
-                    if res.success:
-                        _emit(res)
-                    else:
-                        _collect_failure(res)
-        except BrokenProcessPool:
-            # Bruch beim Pool-Shutdown: alle noch nicht gemeldeten Dateien
-            # gelten als potenziell betroffen.
-            handled = {r.source_path for r in results}
-            handled |= {src for src, _ in retry_reduced}
-            crashed = [f for f in remaining if f not in crashed and f not in handled]
+                    for future in done_now:
+                        src = futures[future]
+                        try:
+                            res = future.result()
+                        except BrokenProcessPool:
+                            crashed.append(src)
+                            continue
+                        except Exception as exc:  # noqa: BLE001 -- Batch weiterfuehren
+                            detail = traceback.format_exc()
+                            category, hint = _classify_error(f"{exc}\n{detail}")
+                            _collect_failure(ConversionResult(
+                                source_path=src, success=False,
+                                error=f"Pool-Fehler: {exc}",
+                                error_category=category, error_hint=hint,
+                                error_detail=detail.strip(),
+                            ))
+                            continue
+                        if res.success:
+                            _emit(res)
+                        else:
+                            _collect_failure(res)
+                pool.shutdown(wait=True)
+            except BrokenProcessPool:
+                # Bruch beim Einreihen/Shutdown: alle noch nicht gemeldeten
+                # Dateien gelten als potenziell betroffen.
+                pool.shutdown(wait=False, cancel_futures=True)
+                handled = {r.source_path for r in results}
+                handled |= {src for src, _ in retry_reduced}
+                crashed = [f for f in remaining
+                           if f not in crashed and f not in handled]
+        except BaseException:
+            # Abbruch von aussen (Abbrechen-Button/Streamlit-Rerun, Strg+C):
+            # Worker sofort beenden, nicht auf angefangene Dateien warten.
+            _abort_pool(pool)
+            raise
 
         next_round: list[str] = []
         for src in crashed:
@@ -1003,15 +1141,20 @@ def run_conversion_batch(
     reduced = _reduced_config(config)
     for src, first_fail in retry_reduced:
         retry_result: Optional[ConversionResult] = None
+        pool = ProcessPoolExecutor(
+            max_workers=1,
+            initializer=init_worker,
+            initargs=(reduced, str(output_dir), str(input_root)),
+        )
         try:
-            with ProcessPoolExecutor(
-                max_workers=1,
-                initializer=init_worker,
-                initargs=(reduced, str(output_dir), str(input_root)),
-            ) as pool:
+            try:
                 retry_result = pool.submit(convert_file_task, src).result()
-        except (BrokenProcessPool, Exception):  # noqa: BLE001
-            retry_result = None
+            except Exception:  # noqa: BLE001 -- inkl. BrokenProcessPool
+                retry_result = None
+            pool.shutdown(wait=True)
+        except BaseException:
+            _abort_pool(pool)
+            raise
         if retry_result is not None and retry_result.success:
             retry_result.reduced_mode = True
             _emit(retry_result)
@@ -1179,6 +1322,11 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     if args.no_frontmatter:
         config.add_frontmatter = False
 
+    engine_warning = check_ocr_engine(config)
+    if engine_warning:
+        print(f"FEHLER: {engine_warning}", file=sys.stderr)
+        return 2
+
     files = discover_files(input_root)
     total = len(files)
     if total == 0:
@@ -1224,16 +1372,22 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         rate = done / elapsed if elapsed else 0
         eta = (total_n - done) / rate if rate else 0
         marker = "  [reduziert]" if res.reduced_mode else ""
+        if res.pdf_backend:
+            marker += "  [pypdfium]"
         print(
             f"[{done}/{total_n}] ok={ok} fehler={len(failed)} "
             f"ETA={eta:6.0f}s  {Path(res.source_path).name}{marker}",
             flush=True,
         )
 
-    run_conversion_batch(
-        files, config, output_dir, input_root, args.workers,
-        progress=_cli_progress,
-    )
+    try:
+        run_conversion_batch(
+            files, config, output_dir, input_root, args.workers,
+            progress=_cli_progress,
+        )
+    except KeyboardInterrupt:
+        print("\nAbgebrochen. Bereits konvertierte Dateien bleiben erhalten.")
+        return 130
 
     print(f"\nFertig: {ok} erfolgreich, {len(failed)} fehlgeschlagen.")
     if reduced_count:

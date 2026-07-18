@@ -475,6 +475,13 @@ def run_job(
             converted_ok=0, converted_failed=0,
         )
 
+    # Vorab-Pruefung statt tausendfach identischer Einzelfehler: fehlt die
+    # konfigurierte OCR-Engine (z. B. Tesseract nicht installiert), ist kein
+    # sinnvoller Lauf moeglich.
+    engine_warning = dw.check_ocr_engine(job.converter_config())
+    if engine_warning:
+        raise RuntimeError(engine_warning)
+
     lock = None
     if not force:
         lock = _acquire_lock(job.id)
@@ -849,6 +856,10 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             except JobLockedError as exc:
                 print(str(exc), file=sys.stderr)
                 return 3
+            except RuntimeError as exc:
+                # z. B. konfigurierte OCR-Engine nicht installiert
+                print(f"FEHLER: {exc}", file=sys.stderr)
+                return 2
             _print_summary(job, s)
             return 1 if s.converted_failed else 0
         if args.cmd == "watch":
