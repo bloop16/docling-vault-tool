@@ -101,3 +101,66 @@ def test_batch_all_files_crash(tmp_path, monkeypatch):
     )
     assert len(results) == 2
     assert all(r.error_category == "prozessabsturz" for r in results)
+    # Auch der reduzierte Wiederholungsversuch ist gescheitert -> Hinweis.
+    assert all("reduzierten Einstellungen" in r.error_hint for r in results)
+
+
+# --- Automatischer Wiederholungsversuch mit reduzierten Einstellungen -------
+# Simuliert den realen std::bad_alloc-Fall: eine riesige CAD-Zeichnung crasht
+# den Worker bei voller Bildskalierung, laesst sich aber mit reduzierten
+# Einstellungen (keine Bildextraktion) konvertieren.
+
+def _config_init(config, output_dir, input_root):
+    dw._WORKER_CONFIG = config
+
+
+def _task_crash_unless_reduced(source_path: str) -> dw.ConversionResult:
+    if "huge" in source_path and dw._WORKER_CONFIG.generate_picture_images:
+        os._exit(137)          # bad_alloc nur bei voller Konfiguration
+    return _task_ok(source_path)
+
+
+def _task_memfail_unless_reduced(source_path: str) -> dw.ConversionResult:
+    if "huge" in source_path and dw._WORKER_CONFIG.generate_picture_images:
+        return dw.ConversionResult(
+            source_path=source_path, success=False,
+            error="Stage preprocess failed for run 12, pages [2]: std::bad_alloc",
+            error_category="speicher", error_hint="Speicher reicht nicht.",
+        )
+    return _task_ok(source_path)
+
+
+def test_reduced_retry_rescues_crashing_file(tmp_path, monkeypatch):
+    """Worker-Absturz -> automatischer Erfolg im reduzierten Einzelprozess."""
+    monkeypatch.setattr(dw, "init_worker", _config_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_crash_unless_reduced)
+    files = _paths(tmp_path, ["ok.pdf", "huge.pdf"])
+
+    seen = []
+    results = dw.run_conversion_batch(
+        files, dw.ConverterConfig(), tmp_path, tmp_path, max_workers=2,
+        progress=lambda d, t, r: seen.append((d, t)),
+    )
+
+    by_path = {Path(r.source_path).name: r for r in results}
+    assert by_path["ok.pdf"].success and not by_path["ok.pdf"].reduced_mode
+    rescued = by_path["huge.pdf"]
+    assert rescued.success
+    assert rescued.reduced_mode
+    assert seen[-1] == (2, 2)
+
+
+def test_reduced_retry_rescues_memory_failure(tmp_path, monkeypatch):
+    """Gemeldeter Speicherfehler (ohne Absturz) wird ebenfalls gerettet."""
+    monkeypatch.setattr(dw, "init_worker", _config_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_memfail_unless_reduced)
+    files = _paths(tmp_path, ["ok.pdf", "huge.pdf"])
+
+    results = dw.run_conversion_batch(
+        files, dw.ConverterConfig(), tmp_path, tmp_path, max_workers=2,
+    )
+
+    assert len(results) == 2
+    by_path = {Path(r.source_path).name: r for r in results}
+    assert by_path["huge.pdf"].success
+    assert by_path["huge.pdf"].reduced_mode

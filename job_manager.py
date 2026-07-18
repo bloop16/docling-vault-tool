@@ -169,6 +169,8 @@ class JobRunSummary:
     changes: dict[str, int]
     converted_ok: int
     converted_failed: int
+    # Davon mit reduzierten Einstellungen konvertiert (riesige PDF-Seiten).
+    converted_reduced: int = 0
     failures: list = field(default_factory=list)
     dry_run: bool = False
     skipped_locked: bool = False
@@ -478,6 +480,7 @@ def run_job(
         lock = _acquire_lock(job.id)
     batch = convert_batch or _default_convert_batch
     ok = 0
+    reduced = 0
     failed = 0
     failures: list = []
     try:
@@ -500,6 +503,9 @@ def run_job(
                 entry["moved_to"] = res.moved_to
             if res.success:
                 ok += 1
+                if getattr(res, "reduced_mode", False):
+                    reduced += 1
+                    entry["reduced"] = True
                 entry["attempts"] = 0
                 try:
                     entry["hash"] = _hash_file(Path(res.source_path))
@@ -522,7 +528,8 @@ def run_job(
     summary = JobRunSummary(
         job_id=job.id, started_at=started.isoformat(timespec="seconds"),
         duration_s=time.perf_counter() - t0, changes=changes.counts(),
-        converted_ok=ok, converted_failed=failed, failures=failures,
+        converted_ok=ok, converted_failed=failed,
+        converted_reduced=reduced, failures=failures,
     )
 
     # Optionaler Vault-Build + Such-Index -- nur wenn tatsaechlich etwas
@@ -554,6 +561,7 @@ def run_job(
         "changes": summary.changes,
         "converted_ok": ok,
         "converted_failed": failed,
+        **({"converted_reduced": reduced} if reduced else {}),
         "failures": [
             {"file": f.source_path, "error": f.error, "category": f.error_category}
             for f in failures[:25]
