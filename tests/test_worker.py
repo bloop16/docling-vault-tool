@@ -99,7 +99,46 @@ def test_error_classification():
     assert dw._classify_error("voellig unerwartet")[0] == "fehler"
 
 
+def test_error_classification_windows_first_run():
+    """Die realen Fehlerbilder aus dem Windows-Erstlauf werden erkannt."""
+    # OneDrive-Platzhalter ("Dateien bei Bedarf"): unvollstaendig gelesen.
+    cat, hint = dw._classify_error(
+        "RuntimeError: unexpected EOF, expected 39926 more bytes. "
+        "The file might be corrupted."
+    )
+    assert cat == "cloud-platzhalter"
+    assert "OneDrive" in hint
+
+    # Kaputte RapidOCR-Modelldateien (Download von modelscope.cn blockiert).
+    assert dw._classify_error(
+        "RuntimeError: storage has wrong byte size: expected 100 got 5"
+    )[0] == "ocr-modelle"
+    assert dw._classify_error(
+        "UnpicklingError: pickle data was truncated"
+    )[0] == "ocr-modelle"
+    assert dw._classify_error(
+        "[RapidOCR] Download failed: https://www.modelscope.cn/..."
+    )[0] == "ocr-modelle"
+
+    # Harte Worker-Abstuerze.
+    assert dw._classify_error("std::bad_alloc")[0] == "speicher"
+    assert dw._classify_error(
+        "A process in the process pool was terminated abruptly"
+    )[0] == "prozessabsturz"
+
+
+def test_unreadable_source_is_classified(tmp_path, fake_converter):
+    """Der Hydrations-Read faengt unlesbare Quellen sauber ab."""
+    fake_dir_as_file = tmp_path / "kaputt.pdf"
+    fake_dir_as_file.mkdir()          # Verzeichnis statt Datei -> Lesefehler
+    res = dw.convert_single_file(fake_dir_as_file, tmp_path / "out",
+                                 input_root=tmp_path, converter=fake_converter)
+    assert not res.success
+    assert res.error_category         # klassifiziert, kein Absturz
+
+
 def test_failure_result_fields(tmp_path, boom_converter):
+    (tmp_path / "x.pdf").write_text("inhalt")
     res = dw.convert_single_file(tmp_path / "x.pdf", tmp_path / "out",
                                  input_root=tmp_path, converter=boom_converter)
     assert not res.success

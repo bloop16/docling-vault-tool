@@ -17,7 +17,6 @@ import csv
 import io
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import streamlit as st
@@ -169,6 +168,120 @@ def _file_uri(path: str) -> str:
         return ""
 
 
+def _ensure_dir(path_str: str) -> tuple[bool, str]:
+    """Legt einen Ordner (samt Eltern) an, falls er fehlt. -> (ok, meldung)."""
+    try:
+        Path(path_str).mkdir(parents=True, exist_ok=True)
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _pick_folder_native(initial: str) -> str | None:
+    """Nativer Ordner-Auswahldialog (tkinter).
+
+    Funktioniert, wenn das Dashboard auf dem Rechner des Nutzers laeuft
+    (typischer Windows-/Desktop-Fall). Auf Headless-Servern/Containern gibt
+    es kein GUI -> None, dann greift der In-App-Ordnerbrowser.
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", 1)
+        picked = filedialog.askdirectory(
+            initialdir=initial if initial and Path(initial).is_dir() else None,
+            master=root,
+        )
+        root.destroy()
+        return picked or None
+    except Exception:  # noqa: BLE001 -- kein Display/tkinter -> Fallback
+        return None
+
+
+def _browse_clicked(session_key: str, current: str) -> None:
+    """Durchsuchen-Klick: nativer Dialog, sonst In-App-Browser oeffnen."""
+    picked = _pick_folder_native(current)
+    if picked:
+        st.session_state[session_key] = picked
+        st.session_state.pop(f"fb_open_{session_key}", None)
+    else:
+        st.session_state[f"fb_open_{session_key}"] = True
+        start = current if current and Path(current).is_dir() else str(Path.home())
+        st.session_state[f"fb_cwd_{session_key}"] = start
+    st.rerun()
+
+
+def _folder_browser(session_key: str) -> None:
+    """In-App-Ordnerbrowser (Fallback ohne GUI, z. B. Docker/Headless)."""
+    cwd = Path(st.session_state.get(f"fb_cwd_{session_key}") or Path.home())
+    st.caption(f"Ordner wählen: `{cwd}`")
+    try:
+        subdirs = sorted(
+            p.name for p in cwd.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        )
+    except OSError:
+        subdirs = []
+
+    choice = st.selectbox(
+        "Unterordner öffnen",
+        ["–"] + subdirs,
+        key=f"fb_sel_{session_key}_{cwd}",
+        label_visibility="collapsed",
+    )
+    b1, b2, b3 = st.columns(3)
+    if b1.button("Öffnen", key=f"fb_go_{session_key}") and choice != "–":
+        st.session_state[f"fb_cwd_{session_key}"] = str(cwd / choice)
+        st.rerun()
+    if b2.button("Ebene hoch", key=f"fb_up_{session_key}"):
+        st.session_state[f"fb_cwd_{session_key}"] = str(cwd.parent)
+        st.rerun()
+    if b3.button("Schließen", key=f"fb_close_{session_key}"):
+        st.session_state.pop(f"fb_open_{session_key}", None)
+        st.rerun()
+
+    new_name = st.text_input(
+        "Neuen Unterordner anlegen",
+        key=f"fb_new_{session_key}",
+        placeholder="Name des neuen Ordners",
+    )
+    if st.button("Anlegen und übernehmen", key=f"fb_mk_{session_key}") and new_name:
+        target = cwd / new_name.strip()
+        ok, msg = _ensure_dir(str(target))
+        if ok:
+            st.session_state[session_key] = str(target)
+            st.session_state.pop(f"fb_open_{session_key}", None)
+            st.rerun()
+        else:
+            st.error(f"Konnte Ordner nicht anlegen: {msg}")
+
+    if st.button("Diesen Ordner übernehmen", type="primary",
+                 key=f"fb_take_{session_key}"):
+        st.session_state[session_key] = str(cwd)
+        st.session_state.pop(f"fb_open_{session_key}", None)
+        st.rerun()
+
+
+def _dir_field(label: str, session_key: str, env_var: str,
+               placeholder: str, help_text: str) -> str:
+    """Pfad-Eingabefeld mit Durchsuchen-Button und Fallback-Browser."""
+    value = st.text_input(
+        label,
+        value=st.session_state.get(session_key, os.environ.get(env_var, "")),
+        placeholder=placeholder,
+        help=help_text,
+    )
+    if st.button("Durchsuchen…", key=f"browse_{session_key}"):
+        _browse_clicked(session_key, value)
+    if st.session_state.get(f"fb_open_{session_key}"):
+        with st.container(border=True):
+            _folder_browser(session_key)
+    return value
+
+
 def _render_failures(failures: list) -> None:
     """Fehlerprotokoll: Kategorien, Tabelle mit Quellenlinks, Details, CSV."""
     _overline("Fehlerprotokoll")
@@ -265,22 +378,18 @@ with st.sidebar:
     st.markdown('<div class="side-label">Verzeichnisse</div>', unsafe_allow_html=True)
     # Vorbelegung aus Umgebungsvariablen: im Container zeigen die Felder damit
     # direkt auf die gemounteten Ordner (docker-compose setzt DOC2VAULT_*_DIR).
-    input_dir = st.text_input(
-        "Quellordner",
-        value=st.session_state.get(
-            "input_dir", os.environ.get("DOC2VAULT_SOURCE_DIR", "")
-        ),
-        placeholder="/pfad/zu/den/dokumenten",
-        help="Wird rekursiv nach unterstützten Dateien durchsucht.",
+    input_dir = _dir_field(
+        "Quellordner", "input_dir", "DOC2VAULT_SOURCE_DIR",
+        "/pfad/zu/den/dokumenten",
+        "Wird rekursiv nach unterstützten Dateien durchsucht. "
+        "„Durchsuchen…“ öffnet die Ordnerauswahl.",
     )
-    output_dir = st.text_input(
-        "Ziel-Vault-Ordner",
-        value=st.session_state.get(
-            "output_dir", os.environ.get("DOC2VAULT_TARGET_DIR", "")
-        ),
-        placeholder="/pfad/zum/vault",
-        help="Zielordner für die Markdown-Dateien. Bestehende Vaults werden "
-        "analysiert und die Dateien entsprechend eingegliedert.",
+    output_dir = _dir_field(
+        "Ziel-Vault-Ordner", "output_dir", "DOC2VAULT_TARGET_DIR",
+        "/pfad/zum/vault",
+        "Zielordner für die Markdown-Dateien; wird bei Bedarf automatisch "
+        "angelegt. Bestehende Vaults werden analysiert und die Dateien "
+        "entsprechend eingegliedert.",
     )
 
     st.markdown('<div class="side-label">Verarbeitung</div>', unsafe_allow_html=True)
@@ -367,13 +476,11 @@ with st.sidebar:
     }[on_success_label]
     archive_dir = ""
     if on_success == "archive":
-        archive_dir = st.text_input(
-            "Archiv-Ordner",
-            value=st.session_state.get(
-                "archive_dir", os.environ.get("DOC2VAULT_ARCHIVE_DIR", "")
-            ),
-            placeholder="/pfad/zum/archiv",
-            help="Die Struktur des Quellordners wird im Archiv gespiegelt.",
+        archive_dir = _dir_field(
+            "Archiv-Ordner", "archive_dir", "DOC2VAULT_ARCHIVE_DIR",
+            "/pfad/zum/archiv",
+            "Die Struktur des Quellordners wird im Archiv gespiegelt; der "
+            "Ordner wird bei Bedarf angelegt.",
         )
         st.session_state["archive_dir"] = archive_dir
     elif on_success == "delete":
@@ -585,52 +692,43 @@ with tab_convert:
         ph_eta = m4.empty()
         ph_current = st.empty()
 
-        ok = 0
-        moved = 0
-        images_total = 0
+        stats = {"ok": 0, "moved": 0, "images": 0}
         failures: list = []
         start_time = time.perf_counter()
 
-        with ProcessPoolExecutor(
-            max_workers=max_workers,
-            initializer=dw.init_worker,
-            initargs=(config, str(out_root), str(input_root)),
-        ) as pool:
-            futures = {pool.submit(dw.convert_file_task, str(f)): f for f in files}
-            for done, future in enumerate(as_completed(futures), start=1):
-                try:
-                    res = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    res = dw.ConversionResult(
-                        source_path=str(futures[future]),
-                        success=False,
-                        error=f"Pool-Fehler: {exc}",
-                    )
-                if res.success:
-                    ok += 1
-                    images_total += res.num_images
-                    if res.moved_to:
-                        moved += 1
-                else:
-                    failures.append(res)
+        def _ui_progress(done: int, total_n: int, res) -> None:
+            if res.success:
+                stats["ok"] += 1
+                stats["images"] += res.num_images
+                if res.moved_to:
+                    stats["moved"] += 1
+            else:
+                failures.append(res)
 
-                elapsed = time.perf_counter() - start_time
-                rate = done / elapsed if elapsed else 0
-                eta = (total - done) / rate if rate else 0
+            elapsed = time.perf_counter() - start_time
+            rate = done / elapsed if elapsed else 0
+            eta = (total_n - done) / rate if rate else 0
 
-                progress.progress(done / total)
-                ph_done.metric("Verarbeitet", f"{done}/{total}")
-                ph_ok.metric("Erfolgreich", ok)
-                ph_fail.metric("Fehler", len(failures))
-                ph_eta.metric("Restzeit", _format_duration(eta))
-                ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
+            progress.progress(done / total_n)
+            ph_done.metric("Verarbeitet", f"{done}/{total_n}")
+            ph_ok.metric("Erfolgreich", stats["ok"])
+            ph_fail.metric("Fehler", len(failures))
+            ph_eta.metric("Restzeit", _format_duration(eta))
+            ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
+
+        # Absturzsicherer Runner: uebersteht harte Worker-Abstuerze (z. B.
+        # Speicher bei riesigen PDFs), statt den ganzen Batch zu verlieren.
+        dw.run_conversion_batch(
+            files, config, out_root, input_root, max_workers,
+            progress=_ui_progress,
+        )
 
         last_run = {
             "target": str(out_root),
             "duration": time.perf_counter() - start_time,
-            "ok": ok,
-            "images": images_total,
-            "moved": moved,
+            "ok": stats["ok"],
+            "images": stats["images"],
+            "moved": stats["moved"],
             "on_success": on_success,
             "failures": failures,
         }
@@ -872,11 +970,13 @@ with tab_jobs:
 # Tab 3: Suche & KI (Such-Index, Ollama-Embeddings und -Tagging)
 # ===========================================================================
 with tab_search:
-    if not output_dir or not Path(output_dir).is_dir():
+    if not output_dir:
         st.info(
-            "In der Seitenleiste einen existierenden Ziel-Vault-Ordner "
-            "angeben – Suche und Index beziehen sich auf diesen Vault."
+            "In der Seitenleiste einen Ziel-Vault-Ordner angeben – Suche und "
+            "Index beziehen sich auf diesen Vault."
         )
+    elif not _ensure_dir(output_dir)[0]:
+        st.error(f"Ziel-Vault-Ordner kann nicht angelegt werden: {output_dir}")
     else:
         vault_path = Path(output_dir).resolve()
 

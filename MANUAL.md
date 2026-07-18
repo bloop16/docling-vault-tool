@@ -17,7 +17,8 @@ Referenz für alle Funktionen. Der schnelle Einstieg steht im
 10. [Datenaustausch](#10-datenaustausch)
 11. [CLI-Referenz](#11-cli-referenz)
 12. [Umgebungsvariablen](#12-umgebungsvariablen)
-13. [Entwicklung & Tests](#13-entwicklung--tests)
+13. [Fehlerbehebung](#13-fehlerbehebung-troubleshooting)
+14. [Entwicklung & Tests](#14-entwicklung--tests)
 
 ---
 
@@ -343,7 +344,40 @@ Für kleine Mengen ohne gemountete Ordner (Dashboard-Tab):
 | `DOC2VAULT_EMBED_MODEL` / `_TAG_MODEL` | Standard-Modelle für `embed`/`tag` | – |
 | `DOC2VAULT_JOB` | Job-ID für den `watch`-Service in Docker Compose | – |
 
-## 13. Entwicklung & Tests
+## 13. Fehlerbehebung (Troubleshooting)
+
+**Viele Dateien scheitern als „prozessabsturz" / „terminated abruptly":**
+Ein einzelnes Problemdokument (meist eine riesige/komplexe PDF, z. B.
+CAD-Zeichnung) hat einen Worker-Prozess mit Speicherfehler (`std::bad_alloc`)
+zum Absturz gebracht. doc2vault startet den Pool automatisch neu und
+verarbeitet die restlichen Dateien weiter; nur die Verursacher werden
+markiert. Abhilfe für die markierten Dateien: parallele Prozesse auf 1–2 und
+die Bildauflösung auf 1.0 reduzieren, Datei einzeln erneut konvertieren.
+
+**„cloud-platzhalter" / `unexpected EOF, expected N more bytes`:**
+Die Quelldatei liegt in OneDrive nur als Platzhalter vor („Dateien bei
+Bedarf") und ist lokal unvollständig. doc2vault liest jede Datei vor der
+Konvertierung einmal komplett ein, was den Download normalerweise auslöst —
+schlägt das fehl: den Quellordner in OneDrive per Rechtsklick auf **„Immer
+auf diesem Gerät behalten"** stellen, Synchronisierung abwarten, erneut
+ausführen.
+
+**„ocr-modelle" / `storage has wrong byte size` / `pickle data was truncated`:**
+Die RapidOCR-Modelldateien sind beschädigt — typischerweise weil der Download
+von `modelscope.cn` (China-CDN) im Firmen-/Heimnetz blockiert war und eine
+halbe Datei liegen blieb. Danach scheitert jeder OCR-Lauf an der kaputten
+Datei. Abhilfe: entweder **OCR deaktivieren** (Standard; nur für gescannte
+PDFs nötig) oder den Modellordner löschen
+(`.venv\Lib\site-packages\rapidocr\models\`) und mit funktionierendem
+Netzzugang erneut konvertieren.
+
+**Ordner lässt sich nicht per Maus wählen:** Der Button **„Durchsuchen…"**
+neben jedem Pfadfeld öffnet den nativen Ordnerdialog des Betriebssystems
+(wenn das Dashboard lokal läuft) bzw. einen eingebauten Ordnerbrowser (beim
+Server-/Docker-Betrieb) — dort lassen sich auch neue Ordner anlegen.
+Fehlende Ziel-Vault-Ordner werden generell automatisch angelegt.
+
+## 14. Entwicklung & Tests
 
 ```bash
 pip install -r requirements-dev.txt

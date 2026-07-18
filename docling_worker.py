@@ -435,6 +435,30 @@ def _yaml_frontmatter(fields: dict[str, object]) -> str:
 # Exceptionklasse + Nachricht + Traceback (kleingeschrieben).
 _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     (
+        ("unexpected eof", "recall_on_data_access"),
+        "cloud-platzhalter",
+        "Datei liegt vermutlich nur als Cloud-Platzhalter vor (OneDrive "
+        "„Dateien bei Bedarf“) und ist lokal unvollständig. Ordner in "
+        "OneDrive auf „Immer auf diesem Gerät behalten“ stellen und erneut "
+        "ausführen.",
+    ),
+    (
+        ("storage has wrong byte size", "pickle data was truncated",
+         "file exists but is invalid", "modelscope", "rapidocr"),
+        "ocr-modelle",
+        "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download "
+        "(modelscope.cn) ist oft blockiert. OCR deaktivieren oder den "
+        "RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang "
+        "erneut laden.",
+    ),
+    (
+        ("terminated abruptly", "brokenprocesspool", "prozess abgestürzt"),
+        "prozessabsturz",
+        "Ein Konvertierungsprozess ist abgestürzt – meist Speicher bei sehr "
+        "großen/komplexen PDFs. Parallele Prozesse und Bildauflösung "
+        "reduzieren; die Datei einzeln erneut versuchen.",
+    ),
+    (
         ("password", "encrypted", "passwort", "verschlüss", "decrypt", "is protected"),
         "passwortgeschützt",
         "Datei ist passwortgeschützt oder verschlüsselt – vor der Konvertierung entsperren.",
@@ -445,7 +469,8 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
         "Datei nicht gefunden oder keine Leserechte.",
     ),
     (
-        ("memoryerror", "cannot allocate", "out of memory", "oom", "killed"),
+        ("memoryerror", "cannot allocate", "out of memory", "oom", "killed",
+         "bad_alloc"),
         "speicher",
         "Zu wenig Arbeitsspeicher – Anzahl paralleler Prozesse reduzieren.",
     ),
@@ -607,6 +632,13 @@ def convert_single_file(
     try:
         from docling_core.types.doc import ImageRefMode
 
+        # Datei einmal vollstaendig sequenziell lesen: zwingt Cloud-Platzhalter
+        # (OneDrive "Dateien bei Bedarf") zum Herunterladen, bevor Docling mit
+        # partiellen Reads auf unvollstaendigen Daten scheitert.
+        with open(source, "rb") as fh:
+            while fh.read(1 << 20):
+                pass
+
         if converter is None:
             converter = build_converter(config)
 
@@ -728,13 +760,100 @@ def convert_file_task(source_path: str) -> ConversionResult:
     )
 
 
+# Wie oft eine Datei, die beim Verarbeiten einen Worker-Absturz miterlebt hat,
+# erneut versucht wird, bevor sie endgueltig als fehlgeschlagen gilt.
+_CRASH_RETRY_LIMIT = 2
+
+
+def run_conversion_batch(
+    files: list,
+    config: ConverterConfig,
+    output_dir: os.PathLike | str,
+    input_root: os.PathLike | str,
+    max_workers: int,
+    progress=None,
+) -> list[ConversionResult]:
+    """Konvertiert eine Dateiliste parallel und uebersteht Worker-Abstuerze.
+
+    Stuerzt ein Worker-Prozess hart ab (z. B. ``std::bad_alloc`` bei einer
+    riesigen CAD-Zeichnung), reisst ``ProcessPoolExecutor`` normalerweise ALLE
+    noch offenen Futures mit -- ein einziges Problemdokument liess so ganze
+    Batches scheitern. Dieser Runner faengt den Pool-Bruch ab, startet den
+    Pool neu und verarbeitet die restlichen Dateien weiter. Dateien, die
+    mehrfach (``_CRASH_RETRY_LIMIT``) waehrend eines Absturzes in Arbeit
+    waren, werden als "prozessabsturz" markiert statt endlos wiederholt.
+
+    ``progress(done, total, result)`` wird fuer jedes Ergebnis aufgerufen.
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures.process import BrokenProcessPool
+
+    remaining = [str(f) for f in files]
+    total = len(remaining)
+    crash_seen: dict[str, int] = {}
+    results: list[ConversionResult] = []
+    done = 0
+
+    def _emit(res: ConversionResult) -> None:
+        nonlocal done
+        done += 1
+        results.append(res)
+        if progress:
+            progress(done, total, res)
+
+    while remaining:
+        crashed: list[str] = []
+        try:
+            with ProcessPoolExecutor(
+                max_workers=max_workers,
+                initializer=init_worker,
+                initargs=(config, str(output_dir), str(input_root)),
+            ) as pool:
+                futures = {pool.submit(convert_file_task, f): f for f in remaining}
+                for future in as_completed(futures):
+                    src = futures[future]
+                    try:
+                        _emit(future.result())
+                    except BrokenProcessPool:
+                        crashed.append(src)
+                    except Exception as exc:  # noqa: BLE001 -- Batch weiterfuehren
+                        detail = traceback.format_exc()
+                        category, hint = _classify_error(f"{exc}\n{detail}")
+                        _emit(ConversionResult(
+                            source_path=src, success=False,
+                            error=f"Pool-Fehler: {exc}",
+                            error_category=category, error_hint=hint,
+                            error_detail=detail.strip(),
+                        ))
+        except BrokenProcessPool:
+            # Bruch beim Pool-Shutdown: alle noch nicht gemeldeten Dateien
+            # gelten als potenziell betroffen.
+            reported = {r.source_path for r in results}
+            crashed = [f for f in remaining if f not in crashed and f not in reported]
+
+        next_round: list[str] = []
+        for src in crashed:
+            crash_seen[src] = crash_seen.get(src, 0) + 1
+            if crash_seen[src] >= _CRASH_RETRY_LIMIT:
+                category, hint = _classify_error("prozess abgestürzt")
+                _emit(ConversionResult(
+                    source_path=src, success=False,
+                    error="Worker-Prozess ist beim Verarbeiten abgestürzt "
+                    "(vermutlich Speicher).",
+                    error_category=category, error_hint=hint,
+                ))
+            else:
+                next_round.append(src)
+        remaining = next_round
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # CLI (nackte Nutzung ohne Streamlit)
 # ---------------------------------------------------------------------------
 
 def _run_cli(argv: Optional[list[str]] = None) -> int:
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-
     parser = argparse.ArgumentParser(
         description="Docling-Batch-Konvertierung (PDF/DOCX/XLSX -> Markdown)."
     )
@@ -900,28 +1019,25 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     failed: list[ConversionResult] = []
     start = time.perf_counter()
 
-    with ProcessPoolExecutor(
-        max_workers=args.workers,
-        initializer=init_worker,
-        initargs=(config, str(output_dir), str(input_root)),
-    ) as pool:
-        futures = {
-            pool.submit(convert_file_task, str(f)): f for f in files
-        }
-        for done, future in enumerate(as_completed(futures), start=1):
-            res = future.result()
-            if res.success:
-                ok += 1
-            else:
-                failed.append(res)
-            elapsed = time.perf_counter() - start
-            rate = done / elapsed if elapsed else 0
-            eta = (total - done) / rate if rate else 0
-            print(
-                f"[{done}/{total}] ok={ok} fehler={len(failed)} "
-                f"ETA={eta:6.0f}s  {Path(res.source_path).name}",
-                flush=True,
-            )
+    def _cli_progress(done: int, total_n: int, res: ConversionResult) -> None:
+        nonlocal ok
+        if res.success:
+            ok += 1
+        else:
+            failed.append(res)
+        elapsed = time.perf_counter() - start
+        rate = done / elapsed if elapsed else 0
+        eta = (total_n - done) / rate if rate else 0
+        print(
+            f"[{done}/{total_n}] ok={ok} fehler={len(failed)} "
+            f"ETA={eta:6.0f}s  {Path(res.source_path).name}",
+            flush=True,
+        )
+
+    run_conversion_batch(
+        files, config, output_dir, input_root, args.workers,
+        progress=_cli_progress,
+    )
 
     print(f"\nFertig: {ok} erfolgreich, {len(failed)} fehlgeschlagen.")
     if failed:
