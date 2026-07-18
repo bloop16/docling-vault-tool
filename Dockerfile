@@ -18,9 +18,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Torch zuerst und CPU-only -- verhindert, dass docling das grosse
-# CUDA-Torch als Abhaengigkeit zieht.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# Torch UND torchvision zuerst und CPU-only -- verhindert, dass docling das
+# grosse CUDA-Torch zieht. Wichtig: beide aus demselben Index, sonst passt
+# das PyPI-torchvision (CUDA-Build) nicht zum +cpu-Torch
+# ("operator torchvision::nms does not exist").
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 COPY pyproject.toml README.md LICENSE ./
 COPY docling_worker.py job_manager.py app_streamlit.py dashboard_launcher.py file_transfer.py vault_builder.py vault_index.py ./
