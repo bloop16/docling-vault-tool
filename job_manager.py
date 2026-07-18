@@ -241,10 +241,12 @@ def add_job(
     while job_id in existing:
         job_id = f"{base}-{n}"
         n += 1
+    target_path = Path(target).resolve()
+    target_path.mkdir(parents=True, exist_ok=True)  # Ziel bei Bedarf anlegen
     job = Job(
         id=job_id, name=name,
         source=str(Path(source).resolve()),
-        target=str(Path(target).resolve()),
+        target=str(target_path),
         config=cfg_dict, poll_interval=poll_interval, max_workers=max_workers,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         build_vault=build_vault,
@@ -424,31 +426,12 @@ def _default_convert_batch(
     max_workers: Optional[int],
     progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]],
 ) -> list["dw.ConversionResult"]:
-    """Konvertiert eine Liste von Dateien parallel (ein Docling-Converter je Prozess)."""
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-
+    """Konvertiert eine Dateiliste ueber den absturzsicheren Batch-Runner."""
     config = job.converter_config()
     workers = max_workers or job.max_workers or max(1, (os.cpu_count() or 2) - 1)
-    results: list[dw.ConversionResult] = []
-    total = len(files)
-    with ProcessPoolExecutor(
-        max_workers=workers,
-        initializer=dw.init_worker,
-        initargs=(config, job.target, job.source),
-    ) as pool:
-        futures = {pool.submit(dw.convert_file_task, f): f for f in files}
-        for done, fut in enumerate(as_completed(futures), start=1):
-            try:
-                res = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                res = dw.ConversionResult(
-                    source_path=futures[fut], success=False,
-                    error=f"Pool-Fehler: {exc}",
-                )
-            results.append(res)
-            if progress:
-                progress(done, total, res)
-    return results
+    return dw.run_conversion_batch(
+        files, config, job.target, job.source, workers, progress=progress
+    )
 
 
 def run_job(
