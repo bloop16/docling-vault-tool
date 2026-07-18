@@ -331,3 +331,39 @@ def test_remove_job_cleans_all_state(job_env):
     assert jm.get_job(job.id) is None
     assert not jm._manifest_file(job.id).exists()
     assert not jm._history_file(job.id).exists()
+
+
+def test_update_job_keeps_manifest(jobs_home, tmp_path):
+    """Engine-Wechsel per update_job/set: Manifest bleibt, nichts wird neu
+    konvertiert (realer Fall: Tesseract gewaehlt, aber nicht installiert)."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_text("x")
+    job = jm.add_job("Wechsel", str(src), str(tmp_path / "vault"),
+                     dw.ConverterConfig(do_ocr=True, ocr_engine="tesseract"))
+
+    # Mit fehlendem Tesseract verweigert run_job den Lauf mit klarem Hinweis
+    # (statt jede Datei einzeln scheitern zu lassen).
+    if dw.shutil.which("tesseract") is None:
+        with pytest.raises(RuntimeError, match="Tesseract"):
+            jm.run_job(job, convert_batch=_fake_batch_factory([]))
+
+    # Engine wechseln -- der typische Reparaturfall.
+    updated = jm.update_job(job.id, config_updates={"ocr_engine": "easyocr"})
+    assert updated.converter_config().ocr_engine == "easyocr"
+    assert updated.converter_config().do_ocr is True          # unangetastet
+
+    # Jetzt laeuft der Job; das Manifest gehoert weiterhin zum selben Job.
+    jm.run_job(jm.get_job(job.id), convert_batch=_fake_batch_factory([]))
+    manifest_before = jm.load_manifest(job.id)
+    assert manifest_before
+
+    # Weitere Aenderung per CLI: Manifest bleibt unangetastet.
+    assert jm._run_cli(["set", job.id, "--ocr-langs", "de,en,fr"]) == 0
+    assert jm.get_job(job.id).converter_config().ocr_languages == "de,en,fr"
+    assert jm.load_manifest(job.id) == manifest_before        # kein Verlust
+    # Unbekannte Felder werden abgewiesen.
+    with pytest.raises(ValueError):
+        jm.update_job(job.id, config_updates={"gibtsnicht": 1})
+    # Unbekannter Job.
+    assert jm.update_job("nope", config_updates={"do_ocr": False}) is None

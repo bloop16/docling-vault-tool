@@ -1019,6 +1019,39 @@ with tab_jobs:
                     + " · ".join(f"{k}: {v}" for k, v in pending.items())
                 )
 
+            # Nachjustieren ohne rm + add: Manifest und Historie bleiben
+            # erhalten, bereits Konvertiertes wird nicht wiederholt.
+            # Wichtigster Fall: falsche OCR-Engine im gespeicherten Plan.
+            job_cfg = job_fresh.converter_config()
+            with st.expander("OCR-Einstellungen ändern"):
+                s_ocr = st.toggle(
+                    "OCR aktiv", value=job_cfg.do_ocr, key=f"set_ocr_{j.id}",
+                )
+                engines = ["easyocr", "tesseract", "rapidocr"]
+                s_engine = st.selectbox(
+                    "OCR-Engine", options=engines,
+                    index=(engines.index(job_cfg.ocr_engine)
+                           if job_cfg.ocr_engine in engines else 0),
+                    key=f"set_engine_{j.id}",
+                )
+                s_langs = st.text_input(
+                    "OCR-Sprachen", value=job_cfg.ocr_languages,
+                    key=f"set_langs_{j.id}",
+                )
+                if st.button("Übernehmen", key=f"set_save_{j.id}"):
+                    jm.update_job(j.id, config_updates={
+                        "do_ocr": s_ocr,
+                        "ocr_engine": s_engine,
+                        "ocr_languages": s_langs,
+                    })
+                    warn = dw.check_ocr_engine(dw.ConverterConfig(
+                        do_ocr=s_ocr, ocr_engine=s_engine, ocr_languages=s_langs,
+                    ))
+                    if warn:
+                        st.warning(warn)
+                    else:
+                        st.success("Job aktualisiert – gilt ab dem nächsten Lauf.")
+
             history = jm.load_history(j.id)
             with st.expander(f"Verlauf ({len(history)} Läufe)"):
                 if history:

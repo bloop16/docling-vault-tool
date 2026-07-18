@@ -258,6 +258,43 @@ def add_job(
     return job
 
 
+def update_job(
+    job_ref: str,
+    config_updates: Optional[dict] = None,
+    poll_interval: Optional[int] = None,
+    max_workers: Optional[int] = None,
+    build_vault: Optional[bool] = None,
+) -> Optional[Job]:
+    """Aendert Einstellungen eines bestehenden Jobs in-place.
+
+    Wichtig gegenueber rm + add: Manifest und Historie bleiben erhalten --
+    bereits konvertierte Dateien werden also NICHT neu konvertiert. Typischer
+    Fall: falsch gewaehlte OCR-Engine (z. B. Tesseract ohne Installation)
+    nachtraeglich auf EasyOCR umstellen.
+    """
+    jobs = load_jobs()
+    target = get_job(job_ref)
+    if not target:
+        return None
+    for job in jobs:
+        if job.id != target.id:
+            continue
+        if config_updates:
+            unknown = set(config_updates) - set(_CONFIG_FIELDS)
+            if unknown:
+                raise ValueError(f"Unbekannte Konfig-Felder: {sorted(unknown)}")
+            job.config.update(config_updates)
+        if poll_interval is not None:
+            job.poll_interval = poll_interval
+        if max_workers is not None:
+            job.max_workers = max_workers
+        if build_vault is not None:
+            job.build_vault = build_vault
+        save_jobs(jobs)
+        return job
+    return None
+
+
 def remove_job(job_ref: str) -> bool:
     jobs = load_jobs()
     job = get_job(job_ref)
@@ -740,6 +777,27 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
                        help="Nach jedem Lauf mit Neukonvertierungen Vault-Build "
                        "(Inbox/Attachments/Wikilinks) + Such-Index ausfuehren")
 
+    p_set = sub.add_parser(
+        "set",
+        help="Job-Einstellungen aendern (Manifest bleibt erhalten -- nichts "
+        "wird neu konvertiert)",
+    )
+    p_set.add_argument("job", help="Job-ID oder Name")
+    p_set.add_argument("--ocr", choices=["on", "off"], default=None,
+                       help="OCR ein-/ausschalten")
+    p_set.add_argument("--ocr-engine", choices=["easyocr", "tesseract", "rapidocr"],
+                       default=None, help="OCR-Engine wechseln")
+    p_set.add_argument("--ocr-langs", default=None,
+                       help="OCR-Sprachen als Kommaliste (de,en)")
+    p_set.add_argument("--images", choices=["on", "off"], default=None,
+                       help="Bildextraktion ein-/ausschalten")
+    p_set.add_argument("--images-scale", type=float, default=None,
+                       help="Skalierung der extrahierten Bilder")
+    p_set.add_argument("--workers", type=int, default=None)
+    p_set.add_argument("--poll-interval", type=int, default=None)
+    p_set.add_argument("--build-vault", choices=["on", "off"], default=None,
+                       help="Vault-Build + Such-Index nach jedem Lauf")
+
     sub.add_parser("list", help="Jobs auflisten")
     for name, helptext in (("plan", "Dry-Run: anstehende Aenderungen zeigen"),
                            ("run", "Job inkrementell ausfuehren"),
@@ -800,6 +858,43 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         print("Integrationsplan:")
         for line in dw.describe_plan(profile, config):
             print(f"  {line}")
+        return 0
+
+    if args.cmd == "set":
+        cfg_updates: dict = {}
+        if args.ocr is not None:
+            cfg_updates["do_ocr"] = args.ocr == "on"
+        if args.ocr_engine is not None:
+            cfg_updates["ocr_engine"] = args.ocr_engine
+        if args.ocr_langs is not None:
+            cfg_updates["ocr_languages"] = args.ocr_langs
+        if args.images is not None:
+            cfg_updates["generate_picture_images"] = args.images == "on"
+        if args.images_scale is not None:
+            cfg_updates["images_scale"] = args.images_scale
+        if (not cfg_updates and args.workers is None
+                and args.poll_interval is None and args.build_vault is None):
+            print("Nichts zu aendern (siehe --help fuer verfuegbare Optionen).",
+                  file=sys.stderr)
+            return 2
+        job = update_job(
+            args.job, config_updates=cfg_updates or None,
+            poll_interval=args.poll_interval, max_workers=args.workers,
+            build_vault=(None if args.build_vault is None
+                         else args.build_vault == "on"),
+        )
+        if not job:
+            print(f"Job nicht gefunden: {args.job}", file=sys.stderr)
+            return 2
+        cfg = job.converter_config()
+        print(f"Job {job.id} aktualisiert.")
+        print(f"  OCR: {'an' if cfg.do_ocr else 'aus'}"
+              + (f" ({cfg.ocr_engine}, {cfg.ocr_languages})" if cfg.do_ocr else ""))
+        print(f"  Bilder: {'an' if cfg.generate_picture_images else 'aus'}"
+              f" (Skalierung {cfg.images_scale})")
+        warning = dw.check_ocr_engine(cfg)
+        if warning:
+            print(f"  WARNUNG: {warning}", file=sys.stderr)
         return 0
 
     if args.cmd == "list":
