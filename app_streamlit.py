@@ -15,9 +15,19 @@ from __future__ import annotations
 
 import csv
 import io
+import multiprocessing
 import os
 import time
 from pathlib import Path
+
+if multiprocessing.current_process().name != "MainProcess":
+    # Windows-Spawn-Worker importieren dieses Skript beim Prozessstart als
+    # Hauptmodul erneut ("bare mode"). Streamlit wuerde dann pro Worker
+    # "to view a Streamlit app..." / "Session state does not function"
+    # ins Log schreiben -- fuer Worker bedeutungslos, daher stumm.
+    import logging as _logging
+
+    _logging.getLogger("streamlit").setLevel(_logging.ERROR)
 
 import streamlit as st
 
@@ -450,6 +460,12 @@ with st.sidebar:
             value="deu,eng" if ocr_engine == "tesseract" else "de,en",
             help="Kommaliste der Erkennungssprachen.",
         )
+        # Sofort warnen statt spaeter 1000+ Einzelfehler produzieren.
+        _engine_warning = dw.check_ocr_engine(dw.ConverterConfig(
+            do_ocr=True, ocr_engine=ocr_engine, ocr_languages=ocr_languages,
+        ))
+        if _engine_warning:
+            st.warning(_engine_warning, icon="⚠️")
 
     st.markdown(
         '<div class="side-label">Excel-Arbeitsmappen</div>', unsafe_allow_html=True
@@ -682,12 +698,33 @@ with tab_convert:
         )
 
     # --- Schritt 3: Konvertierung (nach Bestaetigung) ----------------------
+    # War beim letzten Skriptlauf eine Konvertierung aktiv, die nicht sauber
+    # zu Ende kam, wurde sie unterbrochen -- durch den Abbrechen-Button oder
+    # eine andere Interaktion waehrend des Laufs.
+    if st.session_state.pop("run_active", False) and not confirm:
+        if st.session_state.get("cancel_run"):
+            st.info(
+                "Konvertierung abgebrochen. Bereits fertig konvertierte "
+                "Dateien bleiben erhalten."
+            )
+        else:
+            st.warning(
+                "Der letzte Lauf wurde unterbrochen. Bereits konvertierte "
+                "Dateien bleiben erhalten – einfach erneut starten."
+            )
+
     if confirm and config is not None:
         if not input_dir or not Path(input_dir).is_dir():
             st.error("Bitte einen gültigen Quellordner angeben.")
             st.stop()
         if on_success == "archive" and not archive_dir:
             st.error("Für „In Archiv verschieben“ bitte einen Archiv-Ordner angeben.")
+            st.stop()
+        engine_warning = dw.check_ocr_engine(config)
+        if engine_warning:
+            # Sonst wuerde JEDE Datei einzeln an der fehlenden Engine
+            # scheitern (real passiert: 3000+ identische Fehler).
+            st.error(engine_warning)
             st.stop()
 
         input_root = Path(input_dir).resolve()
@@ -703,6 +740,7 @@ with tab_convert:
             st.stop()
 
         _overline("Fortschritt")
+        st.session_state["run_active"] = True
         progress = st.progress(0.0)
         m1, m2, m3, m4 = st.columns(4)
         ph_done = m1.empty()
@@ -710,12 +748,17 @@ with tab_convert:
         ph_fail = m3.empty()
         ph_eta = m4.empty()
         ph_current = st.empty()
+        # Klick unterbricht das laufende Skript an der naechsten UI-Ausgabe
+        # (Heartbeat/Fortschritt); der Runner beendet die Worker dann sofort.
+        st.button("Konvertierung abbrechen", key="cancel_run")
 
-        stats = {"ok": 0, "moved": 0, "images": 0, "reduced": 0}
+        stats = {"done": 0, "ok": 0, "moved": 0, "images": 0,
+                 "reduced": 0, "pdfium": 0}
         failures: list = []
         start_time = time.perf_counter()
 
         def _ui_progress(done: int, total_n: int, res) -> None:
+            stats["done"] = done
             if res.success:
                 stats["ok"] += 1
                 stats["images"] += res.num_images
@@ -723,6 +766,8 @@ with tab_convert:
                     stats["moved"] += 1
                 if getattr(res, "reduced_mode", False):
                     stats["reduced"] += 1
+                if getattr(res, "pdf_backend", None):
+                    stats["pdfium"] += 1
             else:
                 failures.append(res)
 
@@ -737,12 +782,25 @@ with tab_convert:
             ph_eta.metric("Restzeit", _format_duration(eta))
             ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
 
+        def _ui_heartbeat() -> None:
+            # Sekuendlicher Tick, solange die Worker rechnen: haelt die
+            # Restzeit aktuell und ist der Punkt, an dem ein Abbrechen-Klick
+            # das Skript tatsaechlich unterbricht.
+            elapsed = time.perf_counter() - start_time
+            rate = stats["done"] / elapsed if elapsed else 0
+            if rate:
+                eta = (total - stats["done"]) / rate
+                ph_eta.metric("Restzeit", _format_duration(eta))
+            else:
+                ph_eta.metric("Restzeit", "…")
+
         # Absturzsicherer Runner: uebersteht harte Worker-Abstuerze (z. B.
         # Speicher bei riesigen PDFs), statt den ganzen Batch zu verlieren.
         dw.run_conversion_batch(
             files, config, out_root, input_root, max_workers,
-            progress=_ui_progress,
+            progress=_ui_progress, heartbeat=_ui_heartbeat,
         )
+        st.session_state["run_active"] = False
 
         last_run = {
             "target": str(out_root),
@@ -751,6 +809,7 @@ with tab_convert:
             "images": stats["images"],
             "moved": stats["moved"],
             "reduced": stats["reduced"],
+            "pdfium": stats["pdfium"],
             "on_success": on_success,
             "failures": failures,
         }
@@ -798,6 +857,12 @@ with tab_convert:
                 f"{last['reduced']} Datei(en) mit reduzierten Einstellungen "
                 "konvertiert (riesige Seiten, z. B. CAD-Pläne: "
                 "Bildskalierung 1.0, ohne Bildextraktion)."
+            )
+        if last.get("pdfium"):
+            st.caption(
+                f"{last['pdfium']} PDF(s) über den alternativen "
+                "pypdfium-Parser konvertiert (Standard-Parser lehnte die "
+                "Datei ab)."
             )
         build = last.get("build")
         if build:
@@ -910,6 +975,9 @@ with tab_jobs:
                     summary = jm.run_job(j, progress=_cb, trigger="dashboard")
                 except jm.JobLockedError as exc:
                     st.warning(str(exc))
+                except RuntimeError as exc:
+                    # z. B. konfigurierte OCR-Engine nicht installiert
+                    st.error(str(exc))
                 else:
                     run_bar.progress(1.0)
                     if summary.converted_ok or summary.converted_failed:

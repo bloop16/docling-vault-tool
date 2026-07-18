@@ -76,7 +76,9 @@ Start: `doc2vault-ui` (bzw. `streamlit run app_streamlit.py`). Vier Bereiche:
 - **Konvertierung** — Dateien scannen, Ziel analysieren, Integrationsplan
   bestätigen (einmal für den gesamten Batch), Fortschritt/Restzeit live,
   Ergebnis bleibt stehen. Toggle „Vault-Build nach der Konvertierung" für die
-  komplette Pipeline in einem Durchgang.
+  komplette Pipeline in einem Durchgang. Der Button **„Konvertierung
+  abbrechen"** stoppt einen laufenden Batch sofort (laufende Worker-Prozesse
+  werden beendet); bereits fertig konvertierte Dateien bleiben erhalten.
 - **Jobs & Überwachung** — Jobs anlegen (übernimmt den bestätigten Plan),
   Dry-Run („Prüfen"), inkrementell ausführen, Lauf-Verlauf einsehen.
 - **Suche & KI** — Index-Status/-Aktualisierung, Volltext- und semantische
@@ -103,7 +105,9 @@ Excel-Sheet-Limit und den Umgang mit Originaldateien.
   **Tesseract** (lokal installiertes Tesseract; Sprachcodes wie `deu,eng`)
   oder **RapidOCR** (Docling-Default; lädt PP-OCR-Modelle von
   `modelscope.cn` — in vielen Netzen blockiert). Sprachen per
-  `--ocr-langs de,en`.
+  `--ocr-langs de,en`. Ist Tesseract gewählt, aber nicht installiert, warnt
+  das Dashboard sofort und der Lauf startet gar nicht erst — statt dass jede
+  einzelne Datei mit demselben Fehler scheitert.
 
 **Excel-Arbeitsmappen:** Über das Sheet-Limit (`--xlsx-sheet-limit`, 0 = alle)
 lassen sich Mappen mit sehr vielen Blättern begrenzen. Bei Überschreitung
@@ -379,6 +383,22 @@ Konvertierung einmal komplett ein, was den Download normalerweise auslöst —
 schlägt das fehl: den Quellordner in OneDrive per Rechtsklick auf **„Immer
 auf diesem Gerät behalten"** stellen, Synchronisierung abwarten, erneut
 ausführen.
+
+**„ocr-engine" / `Tesseract is not available` / `[WinError 2]`:**
+Als OCR-Engine ist Tesseract gewählt, aber das Programm `tesseract` ist auf
+dem Rechner nicht installiert bzw. nicht im PATH. Dashboard und CLI prüfen
+das inzwischen vor dem Start und brechen mit einem klaren Hinweis ab.
+Abhilfe: in der Seitenleiste auf die Standard-Engine **EasyOCR** wechseln —
+oder Tesseract installieren (Windows: UB-Mannheim-Installer, Sprache
+„German" mitwählen) und das Dashboard neu starten.
+
+**„pdf-parser" / `Inconsistent number of pages: N!=-1` / `Input document is
+not valid`:** Der Standard-PDF-Parser (docling-parse) konnte die Datei nicht
+laden, obwohl sie meist völlig in Ordnung ist. doc2vault versucht solche
+PDFs automatisch erneut mit dem alternativen **pypdfium-Parser** — gelingt
+das, erscheint die Datei im Ergebnis als „über den alternativen
+pypdfium-Parser konvertiert". Scheitert auch der zweite Versuch, ist die
+PDF vermutlich beschädigt oder verwendet ein exotisches Format.
 
 **„ocr-modelle" / `storage has wrong byte size` / `pickle data was truncated`:**
 Die RapidOCR-Modelldateien sind beschädigt — typischerweise weil der Download
