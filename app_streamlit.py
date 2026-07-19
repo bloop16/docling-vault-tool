@@ -138,6 +138,34 @@ def _overline(text: str) -> None:
     st.markdown(f'<div class="overline">{text}</div>', unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_folder_size(folder: str) -> int:
+    """Ordnergroesse mit kurzem Cache -- der rekursive Scan grosser Vaults
+    darf nicht bei jedem Streamlit-Rerun erneut laufen."""
+    return ft.folder_size(folder)
+
+
+def _file_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+# Manifest/Historie grosser Jobs nicht bei jedem Rerun neu parsen: der
+# mtime-Schluessel invalidiert den Cache genau dann, wenn sich die Datei
+# tatsaechlich geaendert hat.
+@st.cache_data(show_spinner=False)
+def _cached_manifest_ok(job_id: str, mtime: float) -> int:
+    manifest = jm.load_manifest(job_id)
+    return sum(1 for e in manifest.values() if e.get("status") == "ok")
+
+
+@st.cache_data(show_spinner=False)
+def _cached_history(job_id: str, mtime: float) -> list:
+    return jm.load_history(job_id)
+
+
 def _format_duration(seconds: float) -> str:
     seconds = int(max(0, seconds))
     h, rem = divmod(seconds, 3600)
@@ -967,6 +995,7 @@ with tab_jobs:
 
             if del_clicked:
                 jm.remove_job(j.id)
+                st.session_state.pop(f"check_{j.id}", None)
                 st.rerun()
 
             if check_clicked:
@@ -992,6 +1021,8 @@ with tab_jobs:
                     st.error(str(exc))
                 else:
                     run_bar.progress(1.0)
+                    # Dry-Run-Ergebnis ist nach einem echten Lauf veraltet.
+                    st.session_state.pop(f"check_{j.id}", None)
                     if summary.converted_ok or summary.converted_failed:
                         msg = (
                             f"{summary.converted_ok} konvertiert, "
@@ -1014,8 +1045,9 @@ with tab_jobs:
                         st.info("Keine neuen oder geänderten Dateien.")
 
             # Status nach eventuellen Aktionen laden (aktuelle Zahlen).
-            manifest = jm.load_manifest(j.id)
-            done_n = sum(1 for e in manifest.values() if e.get("status") == "ok")
+            done_n = _cached_manifest_ok(
+                j.id, _file_mtime(jm._manifest_file(j.id))
+            )
             job_fresh = jm.get_job(j.id) or j
             st.caption(
                 f"Bereits konvertiert: {done_n} · "
@@ -1064,7 +1096,7 @@ with tab_jobs:
                     else:
                         st.success("Job aktualisiert – gilt ab dem nächsten Lauf.")
 
-            history = jm.load_history(j.id)
+            history = _cached_history(j.id, _file_mtime(jm._history_file(j.id)))
             with st.expander(f"Verlauf ({len(history)} Läufe)"):
                 if history:
                     def _build_cell(rec: dict) -> str:
@@ -1377,7 +1409,10 @@ with tab_transfer:
         if not folder.is_dir():
             st.error("Ordner existiert nicht.")
         else:
-            size = ft.folder_size(folder)
+            # folder_size laeuft rekursiv ueber den ganzen Vault -- gecacht,
+            # sonst wird JEDE Dashboard-Interaktion (Streamlit rendert alle
+            # Tabs bei jedem Rerun) bei grossen Vaults sekundenlang zaeh.
+            size = _cached_folder_size(str(folder))
             st.caption(f"Geschätzte Größe (unkomprimiert): {ft.format_size(size)}")
             if size > 2 * 1024**3:
                 st.warning(
@@ -1388,8 +1423,15 @@ with tab_transfer:
             if st.button("ZIP erstellen"):
                 import tempfile
 
+                # Vorheriges Temp-ZIP (potenziell GB) aufraeumen, sonst
+                # sammeln sich bei jedem Klick komplette Vault-Kopien an.
+                old = st.session_state.get("download_zip")
+                if old:
+                    Path(old).unlink(missing_ok=True)
                 with st.spinner("Verpacke Ordner…"):
-                    tmp = Path(tempfile.mkstemp(suffix=".zip")[1])
+                    fd, tmp_name = tempfile.mkstemp(suffix=".zip")
+                    os.close(fd)   # mkstemp-Descriptor sofort schliessen
+                    tmp = Path(tmp_name)
                     ft.zip_folder(folder, tmp)
                 st.session_state["download_zip"] = str(tmp)
                 st.session_state["download_zip_name"] = f"{folder.name or 'vault'}.zip"

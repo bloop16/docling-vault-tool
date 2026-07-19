@@ -343,3 +343,48 @@ def test_check_paths_overlap(tmp_path):
     # Leere Angaben: keine Aussage.
     assert dw.check_paths(None, src) is None
     assert dw.check_paths(src, "") is None
+
+
+# --- Funde aus dem Code-Review (claude-skills code-reviewer) ----------------
+
+def test_stem_collision_gets_distinct_notes(tmp_path, fake_converter):
+    """Report.pdf + Report.docx im selben Ordner duerfen sich nicht auf
+    dieselbe Report.md abbilden (stilles Ueberschreiben, Datenverlust)."""
+    src_root = tmp_path / "in"
+    src_root.mkdir()
+    out = tmp_path / "vault"
+    (src_root / "Report.pdf").write_text("a")
+    (src_root / "Report.docx").write_text("b")
+
+    r1 = dw.convert_single_file(src_root / "Report.pdf", out,
+                                input_root=src_root, converter=fake_converter)
+    r2 = dw.convert_single_file(src_root / "Report.docx", out,
+                                input_root=src_root, converter=fake_converter)
+    assert r1.success and r2.success
+    assert r1.output_path != r2.output_path
+    assert Path(r1.output_path).exists() and Path(r2.output_path).exists()
+
+    # Ohne Kollision bleibt der bisherige (idempotente) Name erhalten.
+    (src_root / "Solo.pdf").write_text("c")
+    r3 = dw.convert_single_file(src_root / "Solo.pdf", out,
+                                input_root=src_root, converter=fake_converter)
+    assert Path(r3.output_path).name == "Solo.md"
+
+
+def test_post_action_failure_keeps_success(tmp_path, fake_converter, monkeypatch):
+    """Archivieren scheitert (Datei gesperrt): Konvertierung bleibt Erfolg."""
+    src_root = tmp_path / "in"
+    src_root.mkdir()
+    src = src_root / "doc.pdf"
+    src.write_text("x")
+
+    def _boom(source, config, input_root):
+        raise PermissionError("gesperrt")
+
+    monkeypatch.setattr(dw, "_apply_post_action", _boom)
+    cfg = dw.ConverterConfig(on_success="delete")
+    res = dw.convert_single_file(src, tmp_path / "out", input_root=src_root,
+                                 config=cfg, converter=fake_converter)
+    assert res.success
+    assert res.moved_to is None
+    assert res.post_action_error and "PermissionError" in res.post_action_error

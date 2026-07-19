@@ -92,3 +92,40 @@ def test_folder_size_and_format(tmp_path):
     assert size == 14
     assert ft.format_size(14) == "14 B"
     assert ft.format_size(3 * 1024 * 1024) == "3.0 MB"
+
+
+# --- Funde aus dem Code-Review (claude-skills code-reviewer) ----------------
+
+def test_zip_bomb_limits(tmp_path):
+    import io
+    import zipfile
+
+    # Hohe Kompressionsrate + grosser Eintrag -> abgelehnt.
+    bomb = io.BytesIO()
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("null.bin", b"\x00" * (20 * 1024 * 1024))
+    bomb.seek(0)
+    with pytest.raises(ft.UnsafeZipError):
+        ft.safe_extract_zip(bomb, tmp_path / "out")
+
+    # Normale Archive bleiben erlaubt.
+    ok = io.BytesIO()
+    with zipfile.ZipFile(ok, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("doc.txt", "Inhalt " * 100)
+    ok.seek(0)
+    out = ft.safe_extract_zip(ok, tmp_path / "out2")
+    assert len(out) == 1
+
+
+def test_upload_name_collision_is_suffixed(tmp_path):
+    import io
+
+    stored = ft.store_uploads(
+        [("2024/rechnung.pdf", io.BytesIO(b"alt")),
+         ("2025/rechnung.pdf", io.BytesIO(b"neu"))],
+        tmp_path,
+    )
+    assert len(stored) == 2
+    assert len({p.name for p in stored}) == 2       # kein Ueberschreiben
+    contents = sorted(p.read_bytes() for p in stored)
+    assert contents == [b"alt", b"neu"]

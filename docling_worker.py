@@ -119,6 +119,8 @@ class ConversionResult:
     reduced_mode: bool = False
     # "pypdfium", wenn erst der alternative PDF-Parser die Datei laden konnte.
     pdf_backend: Optional[str] = None
+    # Konvertierung ok, aber Archivieren/Loeschen des Originals schlug fehl.
+    post_action_error: Optional[str] = None
 
 
 def _mute_streamlit_bare_mode_warning() -> None:
@@ -354,7 +356,9 @@ def discover_files(
     excluded: list[Path] = []
     for e in exclude_dirs:
         if e:
-            excluded.append(Path(e).absolute())
+            # resolve() statt absolute(): normalisiert Symlinks und
+            # ../-Schreibweisen, sonst laesst sich der Ausschluss aushebeln.
+            excluded.append(Path(e).resolve())
     files: list[Path] = []
     for path in input_path.rglob("*"):
         if not path.is_file():
@@ -366,7 +370,7 @@ def discover_files(
         if any(part.startswith(".") for part in path.relative_to(input_path).parts[:-1]):
             continue
         if excluded:
-            p_abs = path.absolute()
+            p_abs = path.resolve()
             if any(ex == p_abs or ex in p_abs.parents for ex in excluded):
                 continue
         files.append(path)
@@ -733,6 +737,24 @@ def xlsx_sheet_names(path: os.PathLike | str) -> list[str]:
     return [el.get("name", "") for el in root.findall("m:sheets/m:sheet", ns)]
 
 
+def _stem_collides(source: Path) -> bool:
+    """True, wenn im selben Ordner eine WEITERE unterstuetzte Datei mit
+    gleichem Stamm liegt (z. B. Word-Datei + daraus exportiertes PDF)."""
+    try:
+        stem = source.stem.lower()
+        for p in source.parent.iterdir():
+            if (
+                p != source
+                and p.suffix.lower() in SUPPORTED_EXTENSIONS
+                and p.stem.lower() == stem
+                and p.is_file()
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _trim_xlsx(source: Path, keep: int) -> Path:
     """Erzeugt eine temporaere Kopie der Arbeitsmappe mit den ersten ``keep``
     Blaettern. openpyxl ist eine Docling-Abhaengigkeit und daher zur Laufzeit
@@ -747,7 +769,13 @@ def _trim_xlsx(source: Path, keep: int) -> Path:
         del workbook[name]
     fd, tmp = tempfile.mkstemp(suffix=".xlsx", prefix=f"{source.stem}_trimmed_")
     os.close(fd)
-    workbook.save(tmp)
+    try:
+        workbook.save(tmp)
+    except BaseException:
+        # save fehlgeschlagen (Platte voll, exotische Features): Temp-Datei
+        # nicht liegen lassen -- das finally des Aufrufers kennt sie noch nicht.
+        os.unlink(tmp)
+        raise
     return Path(tmp)
 
 
@@ -802,6 +830,14 @@ def convert_single_file(
     except ValueError:
         # Quelle liegt nicht unter input_root -> flach ablegen.
         rel = Path(source.name)
+
+    # Report.pdf + Report.docx im selben Ordner wuerden beide auf Report.md
+    # (und denselben Asset-Ordner) abgebildet und sich still ueberschreiben --
+    # bei Kollision die Endung in den Namen aufnehmen (deterministisch, auch
+    # ueber parallele Worker hinweg).
+    if _stem_collides(source):
+        tag = source.suffix.lstrip(".").lower()
+        rel = rel.with_name(f"{rel.stem} ({tag}){rel.suffix}")
 
     # Notiz-Ablage: optional in einen Unterordner (Vault-Einordnung) und
     # optional mit gespiegelter Quellstruktur.
@@ -907,7 +943,15 @@ def convert_single_file(
         md_path.write_text(body, encoding="utf-8")
 
         # Original erst NACH erfolgreichem Schreiben archivieren/loeschen.
-        moved_to = _apply_post_action(source, config, input_root)
+        # Ein Fehler HIER (Datei in Word geoeffnet -> PermissionError) macht
+        # die Konvertierung nicht ungueltig -- die .md ist fertig; nur die
+        # Nachaktion wird als Warnung vermerkt statt als Fehlschlag.
+        moved_to = None
+        post_action_error = None
+        try:
+            moved_to = _apply_post_action(source, config, input_root)
+        except Exception as exc:  # noqa: BLE001
+            post_action_error = f"{type(exc).__name__}: {exc}"
 
         return ConversionResult(
             source_path=str(source),
@@ -917,6 +961,7 @@ def convert_single_file(
             num_images=num_images,
             duration_s=time.perf_counter() - start,
             moved_to=moved_to,
+            post_action_error=post_action_error,
         )
     except Exception as exc:  # noqa: BLE001 -- Batch soll robust weiterlaufen
         detail = traceback.format_exc()
@@ -946,7 +991,11 @@ def convert_single_file(
 
 _WORKER_CONVERTER = None
 _WORKER_CONVERTER_REDUCED = None
+# pypdfium-Fallback getrennt fuer Voll- und reduzierte Konfiguration: ein
+# gemeinsamer Cache wuerde je nach erstem Ausloeser entweder Bilder still
+# weglassen oder Riesenseiten wieder mit voller Skalierung rendern.
 _WORKER_CONVERTER_PDFIUM = None
+_WORKER_CONVERTER_PDFIUM_REDUCED = None
 _WORKER_CONFIG: Optional[ConverterConfig] = None
 _WORKER_OUTPUT: Optional[Path] = None
 _WORKER_ROOT: Optional[Path] = None
@@ -954,7 +1003,8 @@ _WORKER_ROOT: Optional[Path] = None
 
 def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> None:
     """Initialisiert einen Worker-Prozess (baut den Converter einmalig)."""
-    global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED, _WORKER_CONVERTER_PDFIUM
+    global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED
+    global _WORKER_CONVERTER_PDFIUM, _WORKER_CONVERTER_PDFIUM_REDUCED
     global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
     _mute_streamlit_bare_mode_warning()
     _mute_torch_pin_memory_warning()
@@ -962,9 +1012,10 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
     _WORKER_CONVERTER = build_converter(config)
-    # Beide Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
+    # Alle Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
     _WORKER_CONVERTER_REDUCED = None
     _WORKER_CONVERTER_PDFIUM = None
+    _WORKER_CONVERTER_PDFIUM_REDUCED = None
 
 
 def convert_file_task(source_path: str) -> ConversionResult:
@@ -1004,23 +1055,33 @@ def convert_file_task(source_path: str) -> ConversionResult:
     # "Inconsistent number of pages: N!=-1" / "Input document is not valid"
     # ab (generischer ConversionError "Conversion failed for: ..."). pypdfium
     # laedt dieselben Dateien meist problemlos -> einmaliger zweiter Versuch.
-    global _WORKER_CONVERTER_PDFIUM
+    global _WORKER_CONVERTER_PDFIUM, _WORKER_CONVERTER_PDFIUM_REDUCED
     if (
         not result.success
         and source_path.lower().endswith(".pdf")
         and "conversion failed for" in (result.error or "").lower()
     ):
         try:
-            if _WORKER_CONVERTER_PDFIUM is None:
-                _WORKER_CONVERTER_PDFIUM = build_converter(
-                    config, pdf_backend="pypdfium"
-                )
+            # Cache passend zur effektiven Config waehlen: `config` ist an
+            # dieser Stelle bereits die ggf. reduzierte Variante.
+            if _is_reduced(config):
+                if _WORKER_CONVERTER_PDFIUM_REDUCED is None:
+                    _WORKER_CONVERTER_PDFIUM_REDUCED = build_converter(
+                        config, pdf_backend="pypdfium"
+                    )
+                fallback_converter = _WORKER_CONVERTER_PDFIUM_REDUCED
+            else:
+                if _WORKER_CONVERTER_PDFIUM is None:
+                    _WORKER_CONVERTER_PDFIUM = build_converter(
+                        config, pdf_backend="pypdfium"
+                    )
+                fallback_converter = _WORKER_CONVERTER_PDFIUM
             retry = convert_single_file(
                 source_path,
                 _WORKER_OUTPUT,
                 input_root=_WORKER_ROOT,
                 config=config,
-                converter=_WORKER_CONVERTER_PDFIUM,
+                converter=fallback_converter,
             )
         except Exception:  # noqa: BLE001 -- urspruengliches Ergebnis behalten
             retry = None
@@ -1151,8 +1212,8 @@ def run_conversion_batch(
                 pool.shutdown(wait=False, cancel_futures=True)
                 handled = {r.source_path for r in results}
                 handled |= {src for src, _ in retry_reduced}
-                crashed = [f for f in remaining
-                           if f not in crashed and f not in handled]
+                crashed += [f for f in remaining
+                            if f not in crashed and f not in handled]
         except BaseException:
             # Abbruch von aussen (Abbrechen-Button/Streamlit-Rerun, Strg+C):
             # Worker sofort beenden, nicht auf angefangene Dateien warten.
@@ -1178,8 +1239,24 @@ def run_conversion_batch(
     # ohne Bildextraktion), sequenziell und isoliert -- maximaler Speicher
     # fuer die eine Problemdatei, ein erneuter Absturz bleibt eingedaemmt.
     reduced = _reduced_config(config)
+    # Startet KEIN Worker (kaputte Installation, blockierter Modell-Download),
+    # bricht jeder Pool sofort -- ohne Kappe wuerde fuer jede der ggf.
+    # tausenden Dateien ein weiterer zum Scheitern verurteilter Pool
+    # gestartet (auf Windows je mehrere Sekunden Spawn-Zeit).
+    ok_any = any(r.success for r in results)
+    broken_pools = 0
     for src, first_fail in retry_reduced:
+        if broken_pools >= 3 and not ok_any:
+            first_fail.error_hint = (
+                (first_fail.error_hint or "").rstrip() +
+                " Die Worker-Prozesse konnten wiederholt gar nicht erst "
+                "starten – vermutlich ein Installations- oder Modellproblem "
+                "(Konsolen-Log prüfen), keine Einzeldatei-Ursache."
+            ).strip()
+            _emit(first_fail)
+            continue
         retry_result: Optional[ConversionResult] = None
+        pool_broke = False
         pool = ProcessPoolExecutor(
             max_workers=1,
             initializer=init_worker,
@@ -1187,13 +1264,25 @@ def run_conversion_batch(
         )
         try:
             try:
-                retry_result = pool.submit(convert_file_task, src).result()
-            except Exception:  # noqa: BLE001 -- inkl. BrokenProcessPool
+                future = pool.submit(convert_file_task, src)
+                pending = {future}
+                while pending:
+                    _, pending = wait(
+                        pending, timeout=1.0, return_when=FIRST_COMPLETED
+                    )
+                    if pending and heartbeat:
+                        heartbeat()   # Abbrechen-Klick greift auch hier
+                retry_result = future.result()
+            except BrokenProcessPool:
+                retry_result = None
+                pool_broke = True
+            except Exception:  # noqa: BLE001
                 retry_result = None
             pool.shutdown(wait=True)
         except BaseException:
             _abort_pool(pool)
             raise
+        broken_pools = broken_pools + 1 if pool_broke else 0
         if retry_result is not None and retry_result.success:
             retry_result.reduced_mode = True
             _emit(retry_result)
@@ -1369,7 +1458,12 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         print(f"FEHLER: {engine_warning}", file=sys.stderr)
         return 2
 
-    files = discover_files(input_root)
+    # Ziel- und Archivordner ausschliessen: liegt einer davon in der Quelle,
+    # wuerden erzeugte Notizen bzw. archivierte Originale beim naechsten Lauf
+    # selbst als Quelldokumente eingesammelt.
+    files = discover_files(
+        input_root, exclude_dirs=(output_dir, config.archive_dir)
+    )
     total = len(files)
     if total == 0:
         print(f"Keine unterstuetzten Dateien in {input_root} gefunden.")

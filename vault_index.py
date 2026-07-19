@@ -119,6 +119,17 @@ def open_db(vault_dir: os.PathLike | str) -> sqlite3.Connection:
     path = _db_path(vault_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    try:
+        return _init_db(conn)
+    except BaseException:
+        # z. B. korrupte/fremde index.db ("file is not a database"): die
+        # Connection darf nicht offen bleiben -- auf Windows blockiert sie
+        # sonst das Loeschen/Ersetzen der Datei.
+        conn.close()
+        raise
+
+
+def _init_db(conn: sqlite3.Connection) -> sqlite3.Connection:
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5("
         "path, title, tags, keywords, summary, content)"
@@ -335,8 +346,25 @@ class OllamaClient:
                 )
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                # Server hat geantwortet -- das ist KEIN Erreichbarkeits-
+                # problem. Fehlertext (z. B. "model not found") durchreichen;
+                # Client-Fehler (4xx) nicht sinnlos wiederholen.
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")[:300]
+                except Exception:  # noqa: BLE001
+                    body = ""
+                message = (
+                    f"Ollama-Fehler (HTTP {exc.code}) bei {path}: "
+                    f"{body or exc.reason}"
+                )
+                if 400 <= exc.code < 500:
+                    raise OllamaError(message) from exc
+                last_error = OllamaError(message)
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
+        if isinstance(last_error, OllamaError):
+            raise last_error
         raise OllamaError(
             f"Ollama unter {self.base_url} nicht erreichbar: {last_error}"
         )
@@ -557,6 +585,15 @@ def similar(
 
     query_vec = np.asarray(client.embed(model, query), dtype=np.float32)
     matrix = np.vstack([_from_blob(r[3]) for r in rows])
+    if matrix.shape[1] != query_vec.shape[0]:
+        # z. B. DOC2VAULT_EMBED_MODEL zeigt auf ein anderes Modell als beim
+        # embed-Lauf -- sonst gaebe es einen nackten numpy-Shape-Traceback
+        # (oder, schlimmer, bei gleicher Dimension still unsinnige Scores).
+        raise OllamaError(
+            f"Embedding-Dimension passt nicht: Index {matrix.shape[1]}, "
+            f"Modell {model!r} liefert {query_vec.shape[0]}. Bitte dasselbe "
+            "Modell wie beim Embedding-Lauf verwenden oder neu einbetten."
+        )
     norms = np.linalg.norm(matrix, axis=1) * (np.linalg.norm(query_vec) or 1.0)
     norms[norms == 0] = 1.0
     scores = matrix @ query_vec / norms
