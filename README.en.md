@@ -1,4 +1,4 @@
-🇩🇪 [Deutsche Version](README.md) — the app UI and CLI output are currently German.
+🇩🇪 [Deutsche Version](README.md) — the dashboard is available in **English and German** (sidebar switch or `DOC2VAULT_LANG=en`); CLI output is currently German.
 
 # doc2vault
 

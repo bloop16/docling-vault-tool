@@ -33,9 +33,12 @@ import streamlit as st
 
 import docling_worker as dw
 import file_transfer as ft
+import i18n
 import job_manager as jm
 import vault_builder as vb
 import vault_index as vi
+from i18n import LANGUAGES
+from i18n import tr as _
 
 st.set_page_config(
     page_title="doc2vault",
@@ -129,6 +132,20 @@ div[data-testid="stExpander"] {
 """
 st.markdown(_CSS, unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
+# Sprachwahl: allererstes Sidebar-Element -- muss VOR dem ersten uebersetzten
+# Text laufen, sonst rendert der Lauf gemischt.
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    _ui_lang = st.selectbox(
+        "Sprache / Language",
+        options=list(LANGUAGES),
+        format_func=LANGUAGES.get,
+        index=list(LANGUAGES).index(i18n.get_language()),
+        key="ui_lang",
+    )
+    i18n.set_language(_ui_lang)
+
 
 # ---------------------------------------------------------------------------
 # Render-Helfer
@@ -181,14 +198,15 @@ def _errors_to_csv(results: list) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
-        ["datei", "kategorie", "hinweis", "fehler", "pfad", "traceback", "dauer_s"]
+        [_("datei"), _("kategorie"), _("hinweis"), _("fehler"), _("pfad"),
+         "traceback", _("dauer_s")]
     )
     for r in results:
         writer.writerow(
             [
                 Path(r.source_path).name,
                 r.error_category or "",
-                r.error_hint or "",
+                _(r.error_hint) if r.error_hint else "",
                 r.error or "",
                 r.source_path,
                 (r.error_detail or "").replace("\r\n", "\n"),
@@ -255,7 +273,7 @@ def _browse_clicked(session_key: str, current: str) -> None:
 def _folder_browser(session_key: str) -> None:
     """In-App-Ordnerbrowser (Fallback ohne GUI, z. B. Docker/Headless)."""
     cwd = Path(st.session_state.get(f"fb_cwd_{session_key}") or Path.home())
-    st.caption(f"Ordner wählen: `{cwd}`")
+    st.caption(_("Ordner wählen: `{cwd}`", cwd=cwd))
     try:
         subdirs = sorted(
             p.name for p in cwd.iterdir()
@@ -265,28 +283,28 @@ def _folder_browser(session_key: str) -> None:
         subdirs = []
 
     choice = st.selectbox(
-        "Unterordner öffnen",
+        _("Unterordner öffnen"),
         ["–"] + subdirs,
         key=f"fb_sel_{session_key}_{cwd}",
         label_visibility="collapsed",
     )
     b1, b2, b3 = st.columns(3)
-    if b1.button("Öffnen", key=f"fb_go_{session_key}") and choice != "–":
+    if b1.button(_("Öffnen"), key=f"fb_go_{session_key}") and choice != "–":
         st.session_state[f"fb_cwd_{session_key}"] = str(cwd / choice)
         st.rerun()
-    if b2.button("Ebene hoch", key=f"fb_up_{session_key}"):
+    if b2.button(_("Ebene hoch"), key=f"fb_up_{session_key}"):
         st.session_state[f"fb_cwd_{session_key}"] = str(cwd.parent)
         st.rerun()
-    if b3.button("Schließen", key=f"fb_close_{session_key}"):
+    if b3.button(_("Schließen"), key=f"fb_close_{session_key}"):
         st.session_state.pop(f"fb_open_{session_key}", None)
         st.rerun()
 
     new_name = st.text_input(
-        "Neuen Unterordner anlegen",
+        _("Neuen Unterordner anlegen"),
         key=f"fb_new_{session_key}",
-        placeholder="Name des neuen Ordners",
+        placeholder=_("Name des neuen Ordners"),
     )
-    if st.button("Anlegen und übernehmen", key=f"fb_mk_{session_key}") and new_name:
+    if st.button(_("Anlegen und übernehmen"), key=f"fb_mk_{session_key}") and new_name:
         target = cwd / new_name.strip()
         ok, msg = _ensure_dir(str(target))
         if ok:
@@ -294,9 +312,9 @@ def _folder_browser(session_key: str) -> None:
             st.session_state.pop(f"fb_open_{session_key}", None)
             st.rerun()
         else:
-            st.error(f"Konnte Ordner nicht anlegen: {msg}")
+            st.error(_("Konnte Ordner nicht anlegen: {msg}", msg=msg))
 
-    if st.button("Diesen Ordner übernehmen", type="primary",
+    if st.button(_("Diesen Ordner übernehmen"), type="primary",
                  key=f"fb_take_{session_key}"):
         st.session_state[session_key] = str(cwd)
         st.session_state.pop(f"fb_open_{session_key}", None)
@@ -307,12 +325,12 @@ def _dir_field(label: str, session_key: str, env_var: str,
                placeholder: str, help_text: str) -> str:
     """Pfad-Eingabefeld mit Durchsuchen-Button und Fallback-Browser."""
     value = st.text_input(
-        label,
+        _(label),
         value=st.session_state.get(session_key, os.environ.get(env_var, "")),
-        placeholder=placeholder,
-        help=help_text,
+        placeholder=_(placeholder),
+        help=_(help_text),
     )
-    if st.button("Durchsuchen…", key=f"browse_{session_key}"):
+    if st.button(_("Durchsuchen…"), key=f"browse_{session_key}"):
         _browse_clicked(session_key, value)
     if st.session_state.get(f"fb_open_{session_key}"):
         with st.container(border=True):
@@ -322,18 +340,17 @@ def _dir_field(label: str, session_key: str, env_var: str,
 
 def _render_failures(failures: list) -> None:
     """Fehlerprotokoll: Kategorien, Tabelle mit Quellenlinks, Details, CSV."""
-    _overline("Fehlerprotokoll")
+    _overline(_("Fehlerprotokoll"))
 
     cat_counts: dict[str, int] = {}
     for r in failures:
         cat = r.error_category or "fehler"
         cat_counts[cat] = cat_counts.get(cat, 0) + 1
     st.caption(
-        "Kategorien: "
-        + " · ".join(
+        _("Kategorien: {items}", items=" · ".join(
             f"{cat} ({n})"
             for cat, n in sorted(cat_counts.items(), key=lambda kv: -kv[1])
-        )
+        ))
     )
 
     rows = []
@@ -341,13 +358,13 @@ def _render_failures(failures: list) -> None:
         p = Path(r.source_path)
         rows.append(
             {
-                "Datei": p.name,
-                "Kategorie": r.error_category or "fehler",
-                "Hinweis": r.error_hint or "",
-                "Fehler": r.error or "",
-                "Datei öffnen": _file_uri(str(p)),
-                "Ordner öffnen": _file_uri(str(p.parent)),
-                "Pfad": str(p),
+                _("Datei"): p.name,
+                _("Kategorie"): r.error_category or "fehler",
+                _("Hinweis"): _(r.error_hint) if r.error_hint else "",
+                _("Fehler"): r.error or "",
+                _("Datei öffnen"): _file_uri(str(p)),
+                _("Ordner öffnen"): _file_uri(str(p.parent)),
+                _("Pfad"): str(p),
             }
         )
     st.dataframe(
@@ -355,37 +372,37 @@ def _render_failures(failures: list) -> None:
         width="stretch",
         hide_index=True,
         column_config={
-            "Datei öffnen": st.column_config.LinkColumn(
-                "Datei öffnen", display_text="Datei öffnen"
+            _("Datei öffnen"): st.column_config.LinkColumn(
+                _("Datei öffnen"), display_text=_("Datei öffnen")
             ),
-            "Ordner öffnen": st.column_config.LinkColumn(
-                "Ordner öffnen", display_text="Ordner öffnen"
+            _("Ordner öffnen"): st.column_config.LinkColumn(
+                _("Ordner öffnen"), display_text=_("Ordner öffnen")
             ),
         },
     )
-    st.caption(
+    st.caption(_(
         "Hinweis: Manche Browser blockieren file://-Links. In dem Fall den "
         "Pfad aus der Spalte „Pfad“ kopieren."
-    )
+    ))
 
-    st.markdown("**Details je Datei**")
+    st.markdown(f"**{_('Details je Datei')}**")
     for r in failures:
         p = Path(r.source_path)
-        with st.expander(f"{p.name} – {r.error or 'Fehler'}"):
-            st.write(f"**Kategorie:** {r.error_category or 'fehler'}")
+        with st.expander(f"{p.name} – {r.error or _('Fehler')}"):
+            st.write(f"**{_('Kategorie')}:** {r.error_category or 'fehler'}")
             if r.error_hint:
-                st.write(f"**Hinweis:** {r.error_hint}")
+                st.write(f"**{_('Hinweis')}:** {_(r.error_hint)}")
             st.write(f"**Original:** `{p}`")
             uri = _file_uri(str(p))
             if uri:
                 st.markdown(
-                    f"[Datei öffnen]({uri}) · "
-                    f"[Ordner öffnen]({_file_uri(str(p.parent))})"
+                    f"[{_('Datei öffnen')}]({uri}) · "
+                    f"[{_('Ordner öffnen')}]({_file_uri(str(p.parent))})"
                 )
             st.code(r.error_detail or r.error or "", language="text")
 
     st.download_button(
-        "Fehlerprotokoll als CSV herunterladen",
+        _("Fehlerprotokoll als CSV herunterladen"),
         data=_errors_to_csv(failures),
         file_name="doc2vault_fehler.csv",
         mime="text/csv",
@@ -395,15 +412,19 @@ def _render_failures(failures: list) -> None:
 # ---------------------------------------------------------------------------
 # Kopfbereich
 # ---------------------------------------------------------------------------
+_kicker = _("Batch-Konvertierung für Wissens-Vaults")
+_intro = _(
+    "Konvertiert PDF-, Word-, Excel- und PowerPoint-Dokumente in "
+    "strukturiertes Markdown für Obsidian-kompatible Vaults. Überschriften "
+    "und Tabellen bleiben erhalten, eingebettete Bilder werden extrahiert, "
+    "jede Notiz erhält Metadaten mit Rückverweis auf das Original."
+)
 st.markdown(
-    """
+    f"""
     <div class="app-header">
-      <div class="app-kicker">Batch-Konvertierung für Wissens-Vaults</div>
+      <div class="app-kicker">{_kicker}</div>
       <h1>doc2vault</h1>
-      <p>Konvertiert PDF-, Word-, Excel- und PowerPoint-Dokumente in strukturiertes
-      Markdown für Obsidian-kompatible Vaults. Überschriften und Tabellen bleiben
-      erhalten, eingebettete Bilder werden extrahiert, jede Notiz erhält Metadaten
-      mit Rückverweis auf das Original.</p>
+      <p>{_intro}</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -413,7 +434,10 @@ st.markdown(
 # Sidebar: Einstellungen
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown('<div class="side-label">Verzeichnisse</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="side-label">{_("Verzeichnisse")}</div>',
+        unsafe_allow_html=True,
+    )
     # Vorbelegung aus Umgebungsvariablen: im Container zeigen die Felder damit
     # direkt auf die gemounteten Ordner (docker-compose setzt DOC2VAULT_*_DIR).
     input_dir = _dir_field(
@@ -430,105 +454,128 @@ with st.sidebar:
         "entsprechend eingegliedert.",
     )
 
-    st.markdown('<div class="side-label">Verarbeitung</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="side-label">{_("Verarbeitung")}</div>',
+        unsafe_allow_html=True,
+    )
     cpu_count = os.cpu_count() or 2
     max_workers = st.slider(
-        "Parallele Prozesse",
+        _("Parallele Prozesse"),
         min_value=1,
         max_value=cpu_count,
         value=max(1, cpu_count - 1),
-        help="Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren.",
+        help=_("Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren."),
     )
 
     st.markdown(
-        '<div class="side-label">Docling-Funktionen</div>', unsafe_allow_html=True
+        f'<div class="side-label">{_("Docling-Funktionen")}</div>',
+        unsafe_allow_html=True,
     )
     extract_images = st.toggle(
-        "Bilder extrahieren",
+        _("Bilder extrahieren"),
         value=True,
-        help="Eingebettete Grafiken als eigene Dateien ablegen und in den "
-        "Notizen verlinken. Deaktiviert: reine Textkonvertierung.",
+        help=_(
+            "Eingebettete Grafiken als eigene Dateien ablegen und in den "
+            "Notizen verlinken. Deaktiviert: reine Textkonvertierung."
+        ),
     )
     images_scale = 2.0
     if extract_images:
         images_scale = st.slider(
-            "Bildauflösung (Skalierung)",
+            _("Bildauflösung (Skalierung)"),
             min_value=1.0,
             max_value=4.0,
             value=2.0,
             step=0.5,
-            help="Höhere Werte liefern schärfere Bilder, brauchen aber mehr "
-            "Zeit und Speicherplatz.",
+            help=_(
+                "Höhere Werte liefern schärfere Bilder, brauchen aber mehr "
+                "Zeit und Speicherplatz."
+            ),
         )
     table_structure = st.toggle(
-        "Tabellenstruktur erkennen",
+        _("Tabellenstruktur erkennen"),
         value=True,
-        help="Rekonstruiert Tabellen als Markdown-Tabellen. Deaktiviert ist "
-        "die Verarbeitung schneller, Tabellen werden aber zu Fließtext.",
+        help=_(
+            "Rekonstruiert Tabellen als Markdown-Tabellen. Deaktiviert ist "
+            "die Verarbeitung schneller, Tabellen werden aber zu Fließtext."
+        ),
     )
     do_ocr = st.toggle(
-        "OCR für gescannte PDFs",
+        _("OCR für gescannte PDFs"),
         value=False,
-        help="Nur für Scans ohne Textebene aktivieren – deutlich langsamer.",
+        help=_("Nur für Scans ohne Textebene aktivieren – deutlich langsamer."),
     )
     ocr_engine = "easyocr"
     ocr_languages = "de,en"
     if do_ocr:
         ocr_engine = st.selectbox(
-            "OCR-Engine",
+            _("OCR-Engine"),
             options=["easyocr", "tesseract", "rapidocr"],
             index=0,
-            help="EasyOCR (Standard): Modelle werden von GitHub geladen. "
-            "Tesseract: erfordert lokale Installation, Sprachcodes wie "
-            "„deu,eng“. RapidOCR: lädt Modelle von modelscope.cn – in "
-            "vielen Netzen blockiert.",
+            help=_(
+                "EasyOCR (Standard): Modelle werden von GitHub geladen. "
+                "Tesseract: erfordert lokale Installation, Sprachcodes wie "
+                "„deu,eng“. RapidOCR: lädt Modelle von modelscope.cn – in "
+                "vielen Netzen blockiert."
+            ),
         )
         ocr_languages = st.text_input(
-            "OCR-Sprachen",
+            _("OCR-Sprachen"),
             value="deu,eng" if ocr_engine == "tesseract" else "de,en",
-            help="Kommaliste der Erkennungssprachen.",
+            help=_("Kommaliste der Erkennungssprachen."),
         )
         # Sofort warnen statt spaeter 1000+ Einzelfehler produzieren.
         _engine_warning = dw.check_ocr_engine(dw.ConverterConfig(
             do_ocr=True, ocr_engine=ocr_engine, ocr_languages=ocr_languages,
         ))
         if _engine_warning:
-            st.warning(_engine_warning, icon="⚠️")
+            st.warning(_(_engine_warning), icon="⚠️")
 
     st.markdown(
-        '<div class="side-label">Excel-Arbeitsmappen</div>', unsafe_allow_html=True
+        f'<div class="side-label">{_("Excel-Arbeitsmappen")}</div>',
+        unsafe_allow_html=True,
     )
     xlsx_sheet_limit = st.number_input(
-        "Sheet-Limit je Arbeitsmappe",
+        _("Sheet-Limit je Arbeitsmappe"),
         min_value=0,
         value=0,
         step=5,
-        help="0 = alle Blätter konvertieren. Ein Limit begrenzt Laufzeit und "
-        "Notizgröße bei Arbeitsmappen mit sehr vielen Blättern.",
+        help=_(
+            "0 = alle Blätter konvertieren. Ein Limit begrenzt Laufzeit und "
+            "Notizgröße bei Arbeitsmappen mit sehr vielen Blättern."
+        ),
     )
     xlsx_on_limit = "limit"
     if xlsx_sheet_limit > 0:
+        # Optionswerte bleiben deutsch (werden unten gemappt) -- nur die
+        # Anzeige laeuft ueber format_func durch die Uebersetzung.
         xlsx_on_limit_label = st.radio(
-            "Bei Überschreitung",
+            _("Bei Überschreitung"),
             options=["Nur erste Blätter konvertieren", "Datei überspringen"],
             index=0,
-            help="Übersprungene Dateien erscheinen im Fehlerprotokoll. Bei "
-            "„nur erste Blätter“ vermerkt das Frontmatter die Gesamtzahl.",
+            format_func=_,
+            help=_(
+                "Übersprungene Dateien erscheinen im Fehlerprotokoll. Bei "
+                "„nur erste Blätter“ vermerkt das Frontmatter die Gesamtzahl."
+            ),
         )
         xlsx_on_limit = (
             "limit" if xlsx_on_limit_label.startswith("Nur") else "skip"
         )
 
     st.markdown(
-        '<div class="side-label">Nach erfolgreicher Konvertierung</div>',
+        f'<div class="side-label">{_("Nach erfolgreicher Konvertierung")}</div>',
         unsafe_allow_html=True,
     )
     on_success_label = st.radio(
-        "Originaldateien",
+        _("Originaldateien"),
         options=["Behalten", "In Archiv verschieben", "Löschen"],
         index=0,
-        help="Betrifft nur erfolgreich konvertierte Dateien. Fehlgeschlagene "
-        "Dateien bleiben immer unangetastet.",
+        format_func=_,
+        help=_(
+            "Betrifft nur erfolgreich konvertierte Dateien. Fehlgeschlagene "
+            "Dateien bleiben immer unangetastet."
+        ),
     )
     on_success = {
         "Behalten": "keep",
@@ -545,13 +592,13 @@ with st.sidebar:
         )
         st.session_state["archive_dir"] = archive_dir
     elif on_success == "delete":
-        st.warning("Originale werden nach Erfolg unwiderruflich gelöscht.")
+        st.warning(_("Originale werden nach Erfolg unwiderruflich gelöscht."))
 
     st.divider()
-    st.caption(
-        "Unterstützte Formate: "
-        + ", ".join(sorted(e.lstrip(".") for e in dw.SUPPORTED_EXTENSIONS))
-    )
+    st.caption(_(
+        "Unterstützte Formate: {formats}",
+        formats=", ".join(sorted(e.lstrip(".") for e in dw.SUPPORTED_EXTENSIONS)),
+    ))
 
 st.session_state["input_dir"] = input_dir
 st.session_state["output_dir"] = output_dir
@@ -561,7 +608,8 @@ profile = None
 config: dw.ConverterConfig | None = None
 
 tab_convert, tab_jobs, tab_search, tab_transfer = st.tabs(
-    ["Konvertierung", "Jobs & Überwachung", "Suche & KI", "Datenaustausch"]
+    [_("Konvertierung"), _("Jobs & Überwachung"), _("Suche & KI"),
+     _("Datenaustausch")]
 )
 
 # ===========================================================================
@@ -569,47 +617,51 @@ tab_convert, tab_jobs, tab_search, tab_transfer = st.tabs(
 # ===========================================================================
 with tab_convert:
     col_scan, col_analyze = st.columns(2)
-    scan = col_scan.button("Dateien scannen", width="stretch")
-    analyze = col_analyze.button("Ziel analysieren", type="primary", width="stretch")
+    scan = col_scan.button(_("Dateien scannen"), width="stretch")
+    analyze = col_analyze.button(
+        _("Ziel analysieren"), type="primary", width="stretch"
+    )
 
     if scan:
         path_error = dw.check_paths(input_dir, output_dir)
         if not input_dir or not Path(input_dir).is_dir():
-            st.error("Bitte einen gültigen Quellordner angeben.")
+            st.error(_("Bitte einen gültigen Quellordner angeben."))
         elif path_error:
-            st.error(path_error)
+            st.error(_(path_error))
         else:
             files = dw.discover_files(
                 input_dir, exclude_dirs=(output_dir, archive_dir)
             )
             st.session_state["scanned_files"] = [str(f) for f in files]
-            st.success(f"{len(files)} unterstützte Datei(en) gefunden.")
+            st.success(_("{n} unterstützte Datei(en) gefunden.", n=len(files)))
             dup_groups = dw.find_duplicate_files(files)
             if dup_groups:
                 dup_total = sum(len(p) for p in dup_groups.values())
-                st.caption(
-                    f"{len(dup_groups)} Duplikatgruppe(n) mit {dup_total} "
-                    "inhaltsgleichen Dateien gefunden (per CLI-Flag "
-                    "`--duplicates skip` bzw. Job-Option überspringbar)."
-                )
+                st.caption(_(
+                    "{n} Duplikatgruppe(n) mit {m} inhaltsgleichen Dateien "
+                    "gefunden (per CLI-Flag `--duplicates skip` bzw. "
+                    "Job-Option überspringbar).",
+                    n=len(dup_groups), m=dup_total,
+                ))
             if not do_ocr and any(
                 Path(f).suffix.lower() in dw.IMAGE_INPUT_EXTENSIONS
                 for f in files
             ):
-                st.warning(
+                st.warning(_(
                     "Bilddateien im Quellordner, aber OCR ist aus – "
                     "gescannte Bilder ergeben leere Notizen. OCR in der "
                     "Seitenleiste aktivieren."
-                )
+                ))
     elif st.session_state.get("scanned_files"):
-        st.caption(
-            f"Letzter Scan: {len(st.session_state['scanned_files'])} Datei(en)."
-        )
+        st.caption(_(
+            "Letzter Scan: {n} Datei(en).",
+            n=len(st.session_state["scanned_files"]),
+        ))
 
     # --- Schritt 1: Ziel analysieren --------------------------------------
     if analyze:
         if not output_dir:
-            st.error("Bitte einen Ziel-Vault-Ordner angeben.")
+            st.error(_("Bitte einen Ziel-Vault-Ordner angeben."))
         else:
             vault_profile = dw.analyze_vault(output_dir)
             st.session_state["vault_profile"] = vault_profile
@@ -627,7 +679,7 @@ with tab_convert:
     if profile_valid:
         reco = st.session_state["plan_reco"]
 
-        _overline("Zielordner-Analyse")
+        _overline(_("Zielordner-Analyse"))
         type_label = {
             "obsidian": "Obsidian-Vault",
             "logseq": "Logseq-Graph",
@@ -635,65 +687,75 @@ with tab_convert:
             "new": "Neuer Ordner",
         }.get(profile.vault_type, profile.vault_type)
         a1, a2, a3 = st.columns(3)
-        a1.metric("Zieltyp", type_label)
-        a2.metric("Vorhandene Notizen", profile.note_count)
-        a3.metric("Ordner auf oberster Ebene", len(profile.top_level_folders))
+        a1.metric(_("Zieltyp"), _(type_label))
+        a2.metric(_("Vorhandene Notizen"), profile.note_count)
+        a3.metric(_("Ordner auf oberster Ebene"), len(profile.top_level_folders))
         for obs in profile.observations:
-            st.caption(f"– {obs}")
+            st.caption(f"– {_(obs)}")
         if profile.top_level_folders:
-            st.caption(
-                "Bestehende Ordner: "
-                + ", ".join(profile.top_level_folders[:12])
-                + (" …" if len(profile.top_level_folders) > 12 else "")
-            )
+            st.caption(_(
+                "Bestehende Ordner: {folders}",
+                folders=", ".join(profile.top_level_folders[:12])
+                + (" …" if len(profile.top_level_folders) > 12 else ""),
+            ))
 
-        _overline("Integrationsplan")
+        _overline(_("Integrationsplan"))
         if profile.vault_type in ("obsidian", "logseq") and not profile.is_empty:
-            st.info(
+            st.info(_(
                 "Bestehender Vault erkannt. Die Dateien werden entsprechend der "
                 "Vault-Konventionen eingegliedert – bitte den Plan prüfen und "
                 "einmal für den gesamten Batch bestätigen."
-            )
+            ))
 
         c1, c2 = st.columns(2)
         with c1:
+            # Optionswerte bleiben deutsch (Vergleich unten) -- nur die
+            # Anzeige laeuft ueber format_func durch die Uebersetzung.
             placement = st.radio(
-                "Ablage der Notizen",
+                _("Ablage der Notizen"),
                 options=["Eigener Unterordner", "Ziel-Wurzel"],
                 index=0 if reco.notes_subdir else 1,
-                help="Ein eigener Unterordner hält einen kuratierten Vault "
-                "sauber. Die Ziel-Wurzel fügt sich in bestehende gleichnamige "
-                "Ordner ein.",
+                format_func=_,
+                help=_(
+                    "Ein eigener Unterordner hält einen kuratierten Vault "
+                    "sauber. Die Ziel-Wurzel fügt sich in bestehende "
+                    "gleichnamige Ordner ein."
+                ),
             )
             notes_subdir = ""
             if placement == "Eigener Unterordner":
                 notes_subdir = st.text_input(
-                    "Name des Unterordners",
+                    _("Name des Unterordners"),
                     value=reco.notes_subdir or dw.DEFAULT_IMPORT_SUBDIR,
                 )
             add_frontmatter = st.toggle(
-                "Frontmatter-Properties schreiben",
+                _("Frontmatter-Properties schreiben"),
                 value=reco.add_frontmatter,
-                help="source, original_path und assets_folder als "
-                "Obsidian-Properties.",
+                help=_(
+                    "source, original_path und assets_folder als "
+                    "Obsidian-Properties."
+                ),
             )
         with c2:
             attach_adjacent = st.toggle(
-                "Anhänge neben der Notiz ablegen",
+                _("Anhänge neben der Notiz ablegen"),
                 value=(reco.attachments_mode == "adjacent"),
-                help="Aktiviert: ein Ordner je Notiz (Obsidian-Einstellung "
-                "„neben der Notiz“). Deaktiviert: ein zentraler Anhang-Ordner.",
+                help=_(
+                    "Aktiviert: ein Ordner je Notiz (Obsidian-Einstellung "
+                    "„neben der Notiz“). Deaktiviert: ein zentraler "
+                    "Anhang-Ordner."
+                ),
             )
             attachments_subdir = reco.attachments_subdir
             if not attach_adjacent:
                 attachments_subdir = st.text_input(
-                    "Zentraler Anhang-Ordner",
+                    _("Zentraler Anhang-Ordner"),
                     value=reco.attachments_subdir or "assets",
                 )
             mirror = st.toggle(
-                "Quellstruktur spiegeln",
+                _("Quellstruktur spiegeln"),
                 value=reco.mirror_structure,
-                help="Unterordner des Quellordners im Ziel nachbilden.",
+                help=_("Unterordner des Quellordners im Ziel nachbilden."),
             )
 
         config = dw.ConverterConfig(
@@ -715,35 +777,37 @@ with tab_convert:
         )
 
         build_after = st.toggle(
-            "Vault-Build nach der Konvertierung",
+            _("Vault-Build nach der Konvertierung"),
             value=st.session_state.get("build_after", False),
-            help="Post-Processing: Notizen nach Inbox/, Bilder nach "
-            "Attachments/ mit Obsidian-Wikilinks, normiertes Frontmatter; "
-            "Such-Index und INDEX.md werden automatisch aktualisiert. "
-            "Bestehende Notizen des Vaults bleiben unangetastet.",
+            help=_(
+                "Post-Processing: Notizen nach Inbox/, Bilder nach "
+                "Attachments/ mit Obsidian-Wikilinks, normiertes Frontmatter; "
+                "Such-Index und INDEX.md werden automatisch aktualisiert. "
+                "Bestehende Notizen des Vaults bleiben unangetastet."
+            ),
         )
         st.session_state["build_after"] = build_after
 
         with st.container(border=True):
-            st.markdown("**Zusammenfassung**")
+            st.markdown(f"**{_('Zusammenfassung')}**")
             for line in dw.describe_plan(profile, config):
-                st.markdown(f"- {line}")
+                st.markdown(f"- {_(line)}")
             if build_after:
-                st.markdown(
-                    "- Danach: Vault-Build (Inbox/, Attachments/, Wikilinks) "
+                st.markdown("- " + _(
+                    "Danach: Vault-Build (Inbox/, Attachments/, Wikilinks) "
                     "+ Such-Index"
-                )
+                ))
 
         confirm = st.button(
-            "Plan bestätigen und Konvertierung starten",
+            _("Plan bestätigen und Konvertierung starten"),
             type="primary",
             width="stretch",
         )
     else:
-        st.caption(
+        st.caption(_(
             "Ziel-Vault-Ordner angeben und „Ziel analysieren“ ausführen. "
             "Der Integrationsplan wird anschließend zur Bestätigung angezeigt."
-        )
+        ))
 
     # --- Schritt 3: Konvertierung (nach Bestaetigung) ----------------------
     # War beim letzten Skriptlauf eine Konvertierung aktiv, die nicht sauber
@@ -751,32 +815,34 @@ with tab_convert:
     # eine andere Interaktion waehrend des Laufs.
     if st.session_state.pop("run_active", False) and not confirm:
         if st.session_state.get("cancel_run"):
-            st.info(
+            st.info(_(
                 "Konvertierung abgebrochen. Bereits fertig konvertierte "
                 "Dateien bleiben erhalten."
-            )
+            ))
         else:
-            st.warning(
+            st.warning(_(
                 "Der letzte Lauf wurde unterbrochen. Bereits konvertierte "
                 "Dateien bleiben erhalten – einfach erneut starten."
-            )
+            ))
 
     if confirm and config is not None:
         if not input_dir or not Path(input_dir).is_dir():
-            st.error("Bitte einen gültigen Quellordner angeben.")
+            st.error(_("Bitte einen gültigen Quellordner angeben."))
             st.stop()
         if on_success == "archive" and not archive_dir:
-            st.error("Für „In Archiv verschieben“ bitte einen Archiv-Ordner angeben.")
+            st.error(_(
+                "Für „In Archiv verschieben“ bitte einen Archiv-Ordner angeben."
+            ))
             st.stop()
         engine_warning = dw.check_ocr_engine(config)
         if engine_warning:
             # Sonst wuerde JEDE Datei einzeln an der fehlenden Engine
             # scheitern (real passiert: 3000+ identische Fehler).
-            st.error(engine_warning)
+            st.error(_(engine_warning))
             st.stop()
         path_error = dw.check_paths(input_dir, output_dir)
         if path_error:
-            st.error(path_error)
+            st.error(_(path_error))
             st.stop()
 
         input_root = Path(input_dir).resolve()
@@ -788,10 +854,10 @@ with tab_convert:
         )
         total = len(files)
         if total == 0:
-            st.warning("Keine unterstützten Dateien gefunden.")
+            st.warning(_("Keine unterstützten Dateien gefunden."))
             st.stop()
 
-        _overline("Fortschritt")
+        _overline(_("Fortschritt"))
         st.session_state["run_active"] = True
         progress = st.progress(0.0)
         m1, m2, m3, m4 = st.columns(4)
@@ -802,7 +868,7 @@ with tab_convert:
         ph_current = st.empty()
         # Klick unterbricht das laufende Skript an der naechsten UI-Ausgabe
         # (Heartbeat/Fortschritt); der Runner beendet die Worker dann sofort.
-        st.button("Konvertierung abbrechen", key="cancel_run")
+        st.button(_("Konvertierung abbrechen"), key="cancel_run")
 
         stats = {"done": 0, "ok": 0, "moved": 0, "images": 0,
                  "reduced": 0, "pdfium": 0}
@@ -828,11 +894,13 @@ with tab_convert:
             eta = (total_n - done) / rate if rate else 0
 
             progress.progress(done / total_n)
-            ph_done.metric("Verarbeitet", f"{done}/{total_n}")
-            ph_ok.metric("Erfolgreich", stats["ok"])
-            ph_fail.metric("Fehler", len(failures))
-            ph_eta.metric("Restzeit", _format_duration(eta))
-            ph_current.caption(f"Zuletzt: {Path(res.source_path).name}")
+            ph_done.metric(_("Verarbeitet"), f"{done}/{total_n}")
+            ph_ok.metric(_("Erfolgreich"), stats["ok"])
+            ph_fail.metric(_("Fehler"), len(failures))
+            ph_eta.metric(_("Restzeit"), _format_duration(eta))
+            ph_current.caption(
+                _("Zuletzt: {name}", name=Path(res.source_path).name)
+            )
 
         def _ui_heartbeat() -> None:
             # Sekuendlicher Tick, solange die Worker rechnen: haelt die
@@ -842,9 +910,9 @@ with tab_convert:
             rate = stats["done"] / elapsed if elapsed else 0
             if rate:
                 eta = (total - stats["done"]) / rate
-                ph_eta.metric("Restzeit", _format_duration(eta))
+                ph_eta.metric(_("Restzeit"), _format_duration(eta))
             else:
-                ph_eta.metric("Restzeit", "…")
+                ph_eta.metric(_("Restzeit"), "…")
 
         # Absturzsicherer Runner: uebersteht harte Worker-Abstuerze (z. B.
         # Speicher bei riesigen PDFs), statt den ganzen Batch zu verlieren.
@@ -868,7 +936,7 @@ with tab_convert:
 
         # Optionaler Vault-Build + Index (siehe Toggle im Plan-Bereich).
         if st.session_state.get("build_after"):
-            with st.spinner("Vault-Build und Such-Index…"):
+            with st.spinner(_("Vault-Build und Such-Index…")):
                 try:
                     build_source = (
                         out_root / config.notes_subdir
@@ -891,42 +959,52 @@ with tab_convert:
     # --- Ergebnis (persistiert ueber Reruns) -------------------------------
     last = st.session_state.get("last_run")
     if last:
-        _overline("Ergebnis")
+        _overline(_("Ergebnis"))
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Konvertiert", last["ok"])
-        r2.metric("Bilder extrahiert", last["images"])
-        r3.metric("Fehler", len(last["failures"]))
-        r4.metric("Dauer", _format_duration(last["duration"]))
-        st.caption(f"Ziel: {last['target']}")
+        r1.metric(_("Konvertiert"), last["ok"])
+        r2.metric(_("Bilder extrahiert"), last["images"])
+        r3.metric(_("Fehler"), len(last["failures"]))
+        r4.metric(_("Dauer"), _format_duration(last["duration"]))
+        st.caption(_("Ziel: {target}", target=last["target"]))
         if last["moved"]:
-            verb = (
-                "gelöscht" if last["on_success"] == "delete"
-                else "ins Archiv verschoben"
+            moved_key = (
+                "{n} Originaldatei(en) gelöscht."
+                if last["on_success"] == "delete"
+                else "{n} Originaldatei(en) ins Archiv verschoben."
             )
-            st.caption(f"{last['moved']} Originaldatei(en) {verb}.")
+            st.caption(_(moved_key, n=last["moved"]))
         if last.get("reduced"):
-            st.caption(
-                f"{last['reduced']} Datei(en) mit reduzierten Einstellungen "
-                "konvertiert (riesige Seiten, z. B. CAD-Pläne: "
-                "Bildskalierung 1.0, ohne Bildextraktion)."
-            )
+            st.caption(_(
+                "{n} Datei(en) mit reduzierten Einstellungen konvertiert "
+                "(riesige Seiten, z. B. CAD-Pläne: Bildskalierung 1.0, "
+                "ohne Bildextraktion).",
+                n=last["reduced"],
+            ))
         if last.get("pdfium"):
-            st.caption(
-                f"{last['pdfium']} PDF(s) über den alternativen "
-                "pypdfium-Parser konvertiert (Standard-Parser lehnte die "
-                "Datei ab)."
-            )
+            st.caption(_(
+                "{n} PDF(s) über den alternativen pypdfium-Parser "
+                "konvertiert (Standard-Parser lehnte die Datei ab).",
+                n=last["pdfium"],
+            ))
         build = last.get("build")
         if build:
-            st.caption(
-                f"Vault-Build: {build['notes']} Notiz(en) → Inbox/, "
-                f"{build['images']} Bild(er) → Attachments/ · "
-                f"Such-Index: {build['index_total']} Notizen, INDEX.md aktualisiert"
-                + (f" · {build['collisions']} Kollision(en) aufgelöst"
-                   if build["collisions"] else "")
+            build_line = _(
+                "Vault-Build: {notes} Notiz(en) → Inbox/, {images} Bild(er) "
+                "→ Attachments/ · Such-Index: {index_total} Notizen, "
+                "INDEX.md aktualisiert",
+                notes=build["notes"], images=build["images"],
+                index_total=build["index_total"],
             )
+            if build["collisions"]:
+                build_line += " · " + _(
+                    "{n} Kollision(en) aufgelöst", n=build["collisions"]
+                )
+            st.caption(build_line)
         if last.get("build_error"):
-            st.error(f"Vault-Build fehlgeschlagen: {last['build_error']}")
+            st.error(_(
+                "Vault-Build fehlgeschlagen: {error}",
+                error=last["build_error"],
+            ))
         if last["failures"]:
             _render_failures(last["failures"])
 
@@ -934,45 +1012,47 @@ with tab_convert:
 # Tab 2: Jobs & Ueberwachung
 # ===========================================================================
 with tab_jobs:
-    st.caption(
+    st.caption(_(
         "Jobs verknüpfen Quell- und Zielordner mit dem bestätigten "
         "Integrationsplan und verarbeiten bei jedem Lauf nur neue oder "
         "geänderte Dateien – wiederaufsetzbar, mit Sperre gegen Doppelläufe. "
         "Zieldateien werden nie automatisch entfernt."
-    )
+    ))
 
-    with st.expander("Neuen Job anlegen"):
+    with st.expander(_("Neuen Job anlegen")):
         if not input_dir or not output_dir:
-            st.info("Quell- und Ziel-Ordner in der Seitenleiste angeben.")
+            st.info(_("Quell- und Ziel-Ordner in der Seitenleiste angeben."))
         elif config is None:
-            st.info(
+            st.info(_(
                 "Im Tab „Konvertierung“ zuerst „Ziel analysieren“ ausführen – "
                 "der Job übernimmt den dort bestätigten Integrationsplan."
-            )
+            ))
         else:
             jn_col, jp_col = st.columns([2, 1])
             job_name = jn_col.text_input(
-                "Job-Name",
+                _("Job-Name"),
                 value=(Path(output_dir).name or "Import"),
                 key="new_job_name",
             )
             poll = jp_col.number_input(
-                "Watch-Intervall (Sekunden)",
+                _("Watch-Intervall (Sekunden)"),
                 min_value=5, value=30, step=5,
                 key="new_job_poll",
             )
             job_build = st.toggle(
-                "Vault-Build + Such-Index nach jedem Lauf",
+                _("Vault-Build + Such-Index nach jedem Lauf"),
                 value=st.session_state.get("build_after", False),
                 key="new_job_build",
-                help="Nach jedem Lauf mit Neukonvertierungen: Notizen nach "
-                "Inbox/, Bilder nach Attachments/ mit Wikilinks, Index und "
-                "INDEX.md aktualisieren. Die Watch-Pipeline liefert damit "
-                "direkt den fertigen, durchsuchbaren Vault.",
+                help=_(
+                    "Nach jedem Lauf mit Neukonvertierungen: Notizen nach "
+                    "Inbox/, Bilder nach Attachments/ mit Wikilinks, Index "
+                    "und INDEX.md aktualisieren. Die Watch-Pipeline liefert "
+                    "damit direkt den fertigen, durchsuchbaren Vault."
+                ),
             )
             for line in dw.describe_plan(profile, config):
-                st.caption(f"– {line}")
-            if st.button("Job speichern", key="save_job"):
+                st.caption(f"– {_(line)}")
+            if st.button(_("Job speichern"), key="save_job"):
                 try:
                     new_job = jm.add_job(
                         job_name, input_dir, output_dir, config,
@@ -981,13 +1061,16 @@ with tab_jobs:
                     )
                 except ValueError as exc:
                     # z. B. Quell- und Zielordner identisch
-                    st.error(str(exc))
+                    st.error(_(str(exc)))
                 else:
-                    st.success(f"Job „{new_job.name}“ angelegt ({new_job.id}).")
+                    st.success(_(
+                        "Job „{name}“ angelegt ({id}).",
+                        name=new_job.name, id=new_job.id,
+                    ))
 
     jobs = jm.load_jobs()
     if not jobs:
-        st.caption("Noch keine Jobs angelegt.")
+        st.caption(_("Noch keine Jobs angelegt."))
 
     for j in jobs:
         with st.container(border=True):
@@ -997,17 +1080,19 @@ with tab_jobs:
 
             b1, b2, b3 = act.columns(3)
             check_clicked = b1.button(
-                "Prüfen", key=f"plan_{j.id}",
-                help="Dry-Run: zeigt, was beim nächsten Lauf anstünde.",
+                _("Prüfen"), key=f"plan_{j.id}",
+                help=_("Dry-Run: zeigt, was beim nächsten Lauf anstünde."),
             )
             run_clicked = b2.button(
-                "Ausführen", key=f"run_{j.id}",
-                help="Neue und geänderte Dateien jetzt konvertieren.",
+                _("Ausführen"), key=f"run_{j.id}",
+                help=_("Neue und geänderte Dateien jetzt konvertieren."),
             )
             del_clicked = b3.button(
-                "Löschen", key=f"del_{j.id}",
-                help="Job samt Manifest und Verlauf entfernen. "
-                "Konvertierte Dateien bleiben erhalten.",
+                _("Löschen"), key=f"del_{j.id}",
+                help=_(
+                    "Job samt Manifest und Verlauf entfernen. "
+                    "Konvertierte Dateien bleiben erhalten."
+                ),
             )
 
             if del_clicked:
@@ -1032,34 +1117,38 @@ with tab_jobs:
                 try:
                     summary = jm.run_job(j, progress=_cb, trigger="dashboard")
                 except jm.JobLockedError as exc:
-                    st.warning(str(exc))
+                    st.warning(_(str(exc)))
                 except RuntimeError as exc:
                     # z. B. konfigurierte OCR-Engine nicht installiert
-                    st.error(str(exc))
+                    st.error(_(str(exc)))
                 else:
                     run_bar.progress(1.0)
                     # Dry-Run-Ergebnis ist nach einem echten Lauf veraltet.
                     st.session_state.pop(f"check_{j.id}", None)
                     if summary.converted_ok or summary.converted_failed:
-                        msg = (
-                            f"{summary.converted_ok} konvertiert, "
-                            f"{summary.converted_failed} Fehler "
-                            f"(neu: {summary.changes['neu']}, "
-                            f"geändert: {summary.changes['geaendert']})."
+                        msg = _(
+                            "{ok} konvertiert, {failed} Fehler "
+                            "(neu: {new}, geändert: {changed}).",
+                            ok=summary.converted_ok,
+                            failed=summary.converted_failed,
+                            new=summary.changes["neu"],
+                            changed=summary.changes["geaendert"],
                         )
                         if summary.build_notes is not None:
-                            msg += (
-                                f" Vault-Build: {summary.build_notes} → Inbox/, "
-                                f"Index: {summary.index_total} Notizen."
+                            msg += " " + _(
+                                "Vault-Build: {notes} → Inbox/, "
+                                "Index: {total} Notizen.",
+                                notes=summary.build_notes,
+                                total=summary.index_total,
                             )
                         st.success(msg)
                         if summary.build_error:
-                            st.warning(
-                                f"Vault-Build fehlgeschlagen: "
-                                f"{summary.build_error}"
-                            )
+                            st.warning(_(
+                                "Vault-Build fehlgeschlagen: {error}",
+                                error=summary.build_error,
+                            ))
                     else:
-                        st.info("Keine neuen oder geänderten Dateien.")
+                        st.info(_("Keine neuen oder geänderten Dateien."))
 
             # Status nach eventuellen Aktionen laden (aktuelle Zahlen).
             done_n = _cached_manifest_ok(
@@ -1067,47 +1156,53 @@ with tab_jobs:
             )
             job_fresh = jm.get_job(j.id) or j
             st.caption(
-                f"Bereits konvertiert: {done_n} · "
-                f"Letzter Lauf: {job_fresh.last_run_at or '–'} · "
-                f"Watch-Intervall: {j.poll_interval}s"
-                + (" · Vault-Build + Index: aktiv" if j.build_vault else "")
+                _(
+                    "Bereits konvertiert: {n} · Letzter Lauf: {last} · "
+                    "Watch-Intervall: {poll}s",
+                    n=done_n, last=job_fresh.last_run_at or "–",
+                    poll=j.poll_interval,
+                )
+                + (" · " + _("Vault-Build + Index: aktiv")
+                   if j.build_vault else "")
             )
 
             pending = st.session_state.get(f"check_{j.id}")
             if pending:
-                st.caption(
-                    "Anstehend – "
-                    + " · ".join(f"{k}: {v}" for k, v in pending.items())
-                )
+                st.caption(_(
+                    "Anstehend – {items}",
+                    items=" · ".join(f"{k}: {v}" for k, v in pending.items()),
+                ))
 
             # Nachjustieren ohne rm + add: Manifest und Historie bleiben
             # erhalten, bereits Konvertiertes wird nicht wiederholt.
             # Wichtigster Fall: falsche OCR-Engine im gespeicherten Plan.
             job_cfg = job_fresh.converter_config()
-            with st.expander("Job-Einstellungen ändern"):
+            with st.expander(_("Job-Einstellungen ändern")):
                 s_ocr = st.toggle(
-                    "OCR aktiv", value=job_cfg.do_ocr, key=f"set_ocr_{j.id}",
+                    _("OCR aktiv"), value=job_cfg.do_ocr, key=f"set_ocr_{j.id}",
                 )
                 engines = ["easyocr", "tesseract", "rapidocr"]
                 s_engine = st.selectbox(
-                    "OCR-Engine", options=engines,
+                    _("OCR-Engine"), options=engines,
                     index=(engines.index(job_cfg.ocr_engine)
                            if job_cfg.ocr_engine in engines else 0),
                     key=f"set_engine_{j.id}",
                 )
                 s_langs = st.text_input(
-                    "OCR-Sprachen", value=job_cfg.ocr_languages,
+                    _("OCR-Sprachen"), value=job_cfg.ocr_languages,
                     key=f"set_langs_{j.id}",
                 )
                 s_dedup = st.toggle(
-                    "Inhaltsgleiche neue Dateien überspringen",
+                    _("Inhaltsgleiche neue Dateien überspringen"),
                     value=job_fresh.skip_duplicates,
                     key=f"set_dedup_{j.id}",
-                    help="Neue Dateien, deren Inhalt (SHA-256) bereits "
-                    "konvertiert wurde, werden übersprungen und im Lauf als "
-                    "„duplikate“ ausgewiesen.",
+                    help=_(
+                        "Neue Dateien, deren Inhalt (SHA-256) bereits "
+                        "konvertiert wurde, werden übersprungen und im Lauf "
+                        "als „duplikate“ ausgewiesen."
+                    ),
                 )
-                if st.button("Übernehmen", key=f"set_save_{j.id}"):
+                if st.button(_("Übernehmen"), key=f"set_save_{j.id}"):
                     jm.update_job(j.id, skip_duplicates=s_dedup, config_updates={
                         "do_ocr": s_ocr,
                         "ocr_engine": s_engine,
@@ -1117,16 +1212,16 @@ with tab_jobs:
                         do_ocr=s_ocr, ocr_engine=s_engine, ocr_languages=s_langs,
                     ))
                     if warn:
-                        st.warning(warn)
+                        st.warning(_(warn))
                     else:
-                        st.success("Job aktualisiert – gilt ab dem nächsten Lauf.")
+                        st.success(_("Job aktualisiert – gilt ab dem nächsten Lauf."))
 
             history = _cached_history(j.id, _file_mtime(jm._history_file(j.id)))
-            with st.expander(f"Verlauf ({len(history)} Läufe)"):
+            with st.expander(_("Verlauf ({n} Läufe)", n=len(history))):
                 if history:
                     def _build_cell(rec: dict) -> str:
                         if rec.get("build_error"):
-                            return "Fehler"
+                            return _("Fehler")
                         build = rec.get("build")
                         if build:
                             return (f"{build.get('notes', 0)} → Inbox "
@@ -1135,14 +1230,14 @@ with tab_jobs:
 
                     hist_rows = [
                         {
-                            "Zeitpunkt": rec.get("started_at", "–"),
-                            "Auslöser": rec.get("trigger", "–"),
-                            "Neu": rec.get("changes", {}).get("neu", 0),
-                            "Geändert": rec.get("changes", {}).get("geaendert", 0),
-                            "Konvertiert": rec.get("converted_ok", 0),
-                            "Fehler": rec.get("converted_failed", 0),
+                            _("Zeitpunkt"): rec.get("started_at", "–"),
+                            _("Auslöser"): rec.get("trigger", "–"),
+                            _("Neu"): rec.get("changes", {}).get("neu", 0),
+                            _("Geändert"): rec.get("changes", {}).get("geaendert", 0),
+                            _("Konvertiert"): rec.get("converted_ok", 0),
+                            _("Fehler"): rec.get("converted_failed", 0),
                             "Build": _build_cell(rec),
-                            "Dauer (s)": rec.get("duration_s", 0),
+                            _("Dauer (s)"): rec.get("duration_s", 0),
                         }
                         for rec in reversed(history)
                     ]
@@ -1152,16 +1247,16 @@ with tab_jobs:
                         None,
                     )
                     if last_fail:
-                        st.caption("Fehler im letzten fehlerhaften Lauf:")
+                        st.caption(_("Fehler im letzten fehlerhaften Lauf:"))
                         for f in last_fail["failures"]:
                             st.caption(
                                 f"– {Path(f.get('file', '')).name}: "
                                 f"{f.get('error', '')}"
                             )
                 else:
-                    st.caption("Noch keine Läufe protokolliert.")
+                    st.caption(_("Noch keine Läufe protokolliert."))
 
-            st.caption("Dauerhafte Überwachung (eigener Prozess oder Dienst):")
+            st.caption(_("Dauerhafte Überwachung (eigener Prozess oder Dienst):"))
             st.code(f"doc2vault-jobs watch {j.id}", language="bash")
 
 # ===========================================================================
@@ -1169,63 +1264,75 @@ with tab_jobs:
 # ===========================================================================
 with tab_search:
     if not output_dir:
-        st.info(
+        st.info(_(
             "In der Seitenleiste einen Ziel-Vault-Ordner angeben – Suche und "
             "Index beziehen sich auf diesen Vault."
-        )
+        ))
     elif not _ensure_dir(output_dir)[0]:
-        st.error(f"Ziel-Vault-Ordner kann nicht angelegt werden: {output_dir}")
+        st.error(_(
+            "Ziel-Vault-Ordner kann nicht angelegt werden: {path}",
+            path=output_dir,
+        ))
     else:
         vault_path = Path(output_dir).resolve()
 
         # ---------------- Such-Index: Status + Aktualisierung -------------
-        _overline("Such-Index")
+        _overline(_("Such-Index"))
         status = vi.index_status(vault_path)
         if status["exists"]:
-            line = f"{status['notes']} Notiz(en) indexiert"
+            line = _("{n} Notiz(en) indexiert", n=status["notes"])
             if status["last_indexed"]:
-                line += f" · zuletzt {status['last_indexed']}"
+                line += " · " + _("zuletzt {ts}", ts=status["last_indexed"])
             if status["embedded_chunks"]:
-                line += (f" · {status['embedded_chunks']} Chunks mit "
-                         f"Embeddings ({status['embed_model']})")
+                line += " · " + _(
+                    "{n} Chunks mit Embeddings ({model})",
+                    n=status["embedded_chunks"], model=status["embed_model"],
+                )
             st.caption(line)
         else:
-            st.caption(
+            st.caption(_(
                 "Noch kein Index vorhanden – „Index aktualisieren“ ausführen "
                 "oder die Konvertierung mit Vault-Build starten."
-            )
-        if st.button("Index aktualisieren"):
-            with st.spinner("Indexiere Notizen…"):
+            ))
+        if st.button(_("Index aktualisieren")):
+            with st.spinner(_("Indexiere Notizen…")):
                 isum = vi.update_index(vault_path)
                 vi.write_index_md(vault_path)
-            st.success(
-                f"{isum.indexed} neu/geändert, {isum.unchanged} unverändert, "
-                f"{isum.removed} entfernt ({isum.total} Notizen gesamt). "
-                "INDEX.md aktualisiert."
-            )
+            st.success(_(
+                "{indexed} neu/geändert, {unchanged} unverändert, "
+                "{removed} entfernt ({total} Notizen gesamt). "
+                "INDEX.md aktualisiert.",
+                indexed=isum.indexed, unchanged=isum.unchanged,
+                removed=isum.removed, total=isum.total,
+            ))
 
         # ---------------- Suche -------------------------------------------
-        _overline("Suche")
+        _overline(_("Suche"))
         q_col, m_col, n_col = st.columns([3, 1.5, 0.9])
         search_term = q_col.text_input(
-            "Suchbegriff oder Frage", key="search_term",
-            placeholder="z. B. Wartungsplan Photovoltaik",
+            _("Suchbegriff oder Frage"), key="search_term",
+            placeholder=_("z. B. Wartungsplan Photovoltaik"),
         )
+        # Optionswerte bleiben deutsch (Vergleich unten) -- Anzeige via
+        # format_func.
         search_mode = m_col.radio(
-            "Modus",
+            _("Modus"),
             options=["Volltext", "Semantisch"],
-            help="Volltext: FTS5 über Titel, Tags, Schlagwörter und den "
-            "kompletten Inhalt. Semantisch: Ähnlichkeitssuche über die "
-            "Ollama-Embeddings (unten zuerst berechnen).",
+            format_func=_,
+            help=_(
+                "Volltext: FTS5 über Titel, Tags, Schlagwörter und den "
+                "kompletten Inhalt. Semantisch: Ähnlichkeitssuche über die "
+                "Ollama-Embeddings (unten zuerst berechnen)."
+            ),
         )
-        search_top = n_col.number_input("Treffer", 1, 50, 10)
+        search_top = n_col.number_input(_("Treffer"), 1, 50, 10)
 
-        if st.button("Suchen", type="primary") and search_term:
+        if st.button(_("Suchen"), type="primary") and search_term:
             if search_mode == "Volltext":
                 hits = vi.query_index(vault_path, search_term,
                                       limit=int(search_top))
                 if not hits:
-                    st.info("Keine Treffer.")
+                    st.info(_("Keine Treffer."))
                 for h in hits:
                     with st.container(border=True):
                         title_line = f"**{h['title']}** · `{h['path']}`"
@@ -1246,10 +1353,10 @@ with tab_search:
                         top_k=int(search_top),
                     )
                 except vi.OllamaError as exc:
-                    st.error(str(exc))
+                    st.error(_(str(exc)))
                 else:
                     if not hits:
-                        st.info("Keine Treffer.")
+                        st.info(_("Keine Treffer."))
                     for h in hits:
                         with st.container(border=True):
                             heading = f" › {h['heading']}" if h["heading"] else ""
@@ -1259,38 +1366,38 @@ with tab_search:
                             st.caption(h["text"])
 
         # ---------------- Ollama: Verbindung, Embeddings, Tagging ---------
-        _overline("Ollama (Embeddings & Tagging)")
-        st.caption(
+        _overline(_("Ollama (Embeddings & Tagging)"))
+        st.caption(_(
             "Additiv: Ohne erreichbares Ollama funktionieren Konvertierung, "
             "Vault-Build und Volltextsuche uneingeschränkt."
-        )
+        ))
         u_col, c_col = st.columns([3, 1])
         ollama_url = u_col.text_input(
-            "Ollama-URL",
+            _("Ollama-URL"),
             value=st.session_state.get(
                 "ollama_url",
                 os.environ.get("DOC2VAULT_OLLAMA_URL", vi.DEFAULT_OLLAMA_URL),
             ),
-            help="Auch per Umgebungsvariable DOC2VAULT_OLLAMA_URL setzbar.",
+            help=_("Auch per Umgebungsvariable DOC2VAULT_OLLAMA_URL setzbar."),
         )
         st.session_state["ollama_url"] = ollama_url
         c_col.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        if c_col.button("Verbindung prüfen", width="stretch"):
+        if c_col.button(_("Verbindung prüfen"), width="stretch"):
             try:
                 found = vi.OllamaClient(ollama_url).list_models()
             except vi.OllamaError as exc:
                 st.session_state.pop("ollama_models", None)
-                st.error(str(exc))
+                st.error(_(str(exc)))
             else:
                 st.session_state["ollama_models"] = found
-                st.success(f"Verbunden – {len(found)} Modell(e) verfügbar.")
+                st.success(_("Verbunden – {n} Modell(e) verfügbar.", n=len(found)))
 
         models = st.session_state.get("ollama_models")
         if not models:
-            st.caption(
+            st.caption(_(
                 "Modellauswahl und Aktionen erscheinen nach erfolgreicher "
                 "Verbindungsprüfung (Liste kommt live vom Server, /api/tags)."
-            )
+            ))
         else:
             def _default_idx(candidates: list[str], want_embed: bool) -> int:
                 env = os.environ.get(
@@ -1306,25 +1413,27 @@ with tab_search:
 
             e_col, t_col = st.columns(2)
             embed_model = e_col.selectbox(
-                "Embedding-Modell", models,
+                _("Embedding-Modell"), models,
                 index=_default_idx(models, want_embed=True),
                 key="embed_model",
             )
             tag_model = t_col.selectbox(
-                "Tagging-Modell", models,
+                _("Tagging-Modell"), models,
                 index=_default_idx(models, want_embed=False),
                 key="tag_model",
             )
             write_notes = st.toggle(
-                "Tags/Summary ins Frontmatter der Notizen schreiben",
+                _("Tags/Summary ins Frontmatter der Notizen schreiben"),
                 value=False,
-                help="Neue Tags werden mit vorhandenen manuellen Tags "
-                "gemergt, nie ersetzt. Ohne diese Option landet das Ergebnis "
-                "nur im Such-Index.",
+                help=_(
+                    "Neue Tags werden mit vorhandenen manuellen Tags "
+                    "gemergt, nie ersetzt. Ohne diese Option landet das "
+                    "Ergebnis nur im Such-Index."
+                ),
             )
 
             a_col, b_col = st.columns(2)
-            if a_col.button("Embeddings berechnen", width="stretch"):
+            if a_col.button(_("Embeddings berechnen"), width="stretch"):
                 bar = st.progress(0.0)
                 txt = st.empty()
 
@@ -1333,22 +1442,23 @@ with tab_search:
                     _t.caption(f"{done}/{total} · {rel}")
 
                 try:
-                    with st.spinner("Berechne Embeddings…"):
+                    with st.spinner(_("Berechne Embeddings…")):
                         esum = vi.embed_vault(
                             vault_path, vi.OllamaClient(ollama_url),
                             embed_model, progress=_emb_cb,
                         )
                 except vi.OllamaError as exc:
-                    st.error(str(exc))
+                    st.error(_(str(exc)))
                 else:
                     bar.progress(1.0)
-                    st.success(
-                        f"{esum.chunks_embedded} Chunks neu, "
-                        f"{esum.chunks_reused} wiederverwendet "
-                        f"(Modell {esum.model}, Dimension {esum.dimension})."
-                    )
+                    st.success(_(
+                        "{new} Chunks neu, {reused} wiederverwendet "
+                        "(Modell {model}, Dimension {dim}).",
+                        new=esum.chunks_embedded, reused=esum.chunks_reused,
+                        model=esum.model, dim=esum.dimension,
+                    ))
 
-            if b_col.button("Tagging ausführen", width="stretch"):
+            if b_col.button(_("Tagging ausführen"), width="stretch"):
                 bar = st.progress(0.0)
                 txt = st.empty()
 
@@ -1357,7 +1467,7 @@ with tab_search:
                     _t.caption(f"{done}/{total} · {rel}")
 
                 try:
-                    with st.spinner("Erzeuge Tags und Zusammenfassungen…"):
+                    with st.spinner(_("Erzeuge Tags und Zusammenfassungen…")):
                         tsum = vi.tag_vault(
                             vault_path, vi.OllamaClient(ollama_url),
                             tag_model, write_notes=write_notes,
@@ -1365,14 +1475,17 @@ with tab_search:
                         )
                         vi.write_index_md(vault_path)
                 except vi.OllamaError as exc:
-                    st.error(str(exc))
+                    st.error(_(str(exc)))
                 else:
                     bar.progress(1.0)
                     st.success(
-                        f"{tsum.tagged} Notiz(en) getaggt, "
-                        f"{tsum.unchanged} unverändert, "
-                        f"{tsum.parse_errors} unbrauchbare Antworten."
-                        + (" Tags/Summary im Frontmatter aktualisiert."
+                        _(
+                            "{tagged} Notiz(en) getaggt, {unchanged} "
+                            "unverändert, {errors} unbrauchbare Antworten.",
+                            tagged=tsum.tagged, unchanged=tsum.unchanged,
+                            errors=tsum.parse_errors,
+                        )
+                        + (" " + _("Tags/Summary im Frontmatter aktualisiert.")
                            if write_notes else "")
                     )
 
@@ -1380,72 +1493,80 @@ with tab_search:
 # Tab 4: Datenaustausch (Ad-hoc-Upload/-Download fuer den Server-Betrieb)
 # ===========================================================================
 with tab_transfer:
-    st.caption(
+    st.caption(_(
         "Für kleine Datenmengen ohne gemountete Ordner: Dateien hochladen, "
         "konvertieren, Ergebnis als ZIP herunterladen. Große Bestände gehören "
         "auf gemountete Ordner oder Netzwerk-Shares – siehe README, Abschnitt "
         "„Headless-Server & Docker“."
-    )
+    ))
 
-    _overline("Dateien hochladen")
+    _overline(_("Dateien hochladen"))
     if not input_dir:
-        st.info(
+        st.info(_(
             "Zuerst in der Seitenleiste einen Quellordner angeben – Uploads "
             "werden in dessen Unterordner „uploads“ abgelegt."
-        )
+        ))
     else:
         upload_root = Path(input_dir) / "uploads"
         uploaded = st.file_uploader(
-            "Dokumente oder ZIP-Archive",
+            _("Dokumente oder ZIP-Archive"),
             accept_multiple_files=True,
             type=[e.lstrip(".") for e in sorted(dw.SUPPORTED_EXTENSIONS)] + ["zip"],
-            help="ZIP-Archive werden serverseitig entpackt (Ordnerstruktur "
-            "bleibt erhalten). Ablage unter "
-            f"{upload_root}",
+            help=_(
+                "ZIP-Archive werden serverseitig entpackt (Ordnerstruktur "
+                "bleibt erhalten). Ablage unter {path}",
+                path=upload_root,
+            ),
         )
-        if uploaded and st.button("Hochladen und ablegen", type="primary"):
+        if uploaded and st.button(_("Hochladen und ablegen"), type="primary"):
             try:
                 stored = ft.store_uploads(
                     [(f.name, f) for f in uploaded], upload_root
                 )
             except ft.UnsafeZipError as exc:
-                st.error(f"ZIP abgelehnt: {exc}")
+                st.error(_("ZIP abgelehnt: {error}", error=exc))
             else:
-                st.success(
-                    f"{len(stored)} Datei(en) abgelegt unter `{upload_root}`. "
-                    "Der Ordner liegt im Quellordner und wird beim nächsten "
-                    "Scan bzw. Lauf mit verarbeitet."
-                )
+                st.success(_(
+                    "{n} Datei(en) abgelegt unter `{path}`. Der Ordner liegt "
+                    "im Quellordner und wird beim nächsten Scan bzw. Lauf "
+                    "mit verarbeitet.",
+                    n=len(stored), path=upload_root,
+                ))
 
-    _overline("Ergebnis herunterladen")
+    _overline(_("Ergebnis herunterladen"))
     default_dl = ""
     if output_dir:
         import_dir = Path(output_dir) / dw.DEFAULT_IMPORT_SUBDIR
         default_dl = str(import_dir if import_dir.is_dir() else output_dir)
     download_dir = st.text_input(
-        "Ordner für den Download",
+        _("Ordner für den Download"),
         value=default_dl,
-        placeholder="/pfad/zum/vault",
-        help="Der Ordner wird rekursiv als ZIP verpackt (versteckte Ordner "
-        "wie .obsidian ausgenommen).",
+        placeholder=_("/pfad/zum/vault"),
+        help=_(
+            "Der Ordner wird rekursiv als ZIP verpackt (versteckte Ordner "
+            "wie .obsidian ausgenommen)."
+        ),
     )
     if download_dir:
         folder = Path(download_dir)
         if not folder.is_dir():
-            st.error("Ordner existiert nicht.")
+            st.error(_("Ordner existiert nicht."))
         else:
             # folder_size laeuft rekursiv ueber den ganzen Vault -- gecacht,
             # sonst wird JEDE Dashboard-Interaktion (Streamlit rendert alle
             # Tabs bei jedem Rerun) bei grossen Vaults sekundenlang zaeh.
             size = _cached_folder_size(str(folder))
-            st.caption(f"Geschätzte Größe (unkomprimiert): {ft.format_size(size)}")
+            st.caption(_(
+                "Geschätzte Größe (unkomprimiert): {size}",
+                size=ft.format_size(size),
+            ))
             if size > 2 * 1024**3:
-                st.warning(
+                st.warning(_(
                     "Über 2 GB – der Browser-Download wird zäh. Für große "
                     "Vaults besser einen gemounteten Ordner oder ein "
                     "Netzwerk-Share verwenden."
-                )
-            if st.button("ZIP erstellen"):
+                ))
+            if st.button(_("ZIP erstellen")):
                 import tempfile
 
                 # Vorheriges Temp-ZIP (potenziell GB) aufraeumen, sonst
@@ -1453,7 +1574,7 @@ with tab_transfer:
                 old = st.session_state.get("download_zip")
                 if old:
                     Path(old).unlink(missing_ok=True)
-                with st.spinner("Verpacke Ordner…"):
+                with st.spinner(_("Verpacke Ordner…")):
                     fd, tmp_name = tempfile.mkstemp(suffix=".zip")
                     os.close(fd)   # mkstemp-Descriptor sofort schliessen
                     tmp = Path(tmp_name)
@@ -1465,8 +1586,11 @@ with tab_transfer:
             if zip_path and Path(zip_path).exists():
                 with open(zip_path, "rb") as fh:
                     st.download_button(
-                        f"{st.session_state['download_zip_name']} herunterladen "
-                        f"({ft.format_size(Path(zip_path).stat().st_size)})",
+                        _(
+                            "{name} herunterladen ({size})",
+                            name=st.session_state["download_zip_name"],
+                            size=ft.format_size(Path(zip_path).stat().st_size),
+                        ),
                         data=fh,
                         file_name=st.session_state["download_zip_name"],
                         mime="application/zip",
