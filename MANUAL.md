@@ -91,6 +91,12 @@ Die Seitenleiste bündelt alle Einstellungen: Verzeichnisse, parallele
 Prozesse, Docling-Funktionen (Bilder + Auflösung, Tabellenerkennung, OCR),
 Excel-Sheet-Limit und den Umgang mit Originaldateien.
 
+**Sprache:** Oben in der Seitenleiste lässt sich die Oberfläche zwischen
+**Deutsch** (Standard) und **Englisch** umschalten; die Vorbelegung steuert
+die Umgebungsvariable `DOC2VAULT_LANG=de|en` (praktisch für den
+Server-/Docker-Betrieb). Fehlerhinweise der Konvertierung werden bei der
+Anzeige mitübersetzt; CLI-Ausgaben bleiben derzeit Deutsch.
+
 ## 4. Konvertierung
 
 **Eingabeformate:** PDF, DOCX, XLSX, PPTX, HTML, Markdown sowie

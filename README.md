@@ -74,8 +74,10 @@ Betriebsdetails: **[MANUAL.md](MANUAL.md)**
 Geplant nach 1.x (Reihenfolge offen): REST-API für Automatisierung,
 Ablage-Regeln je Job (Muster → Zielordner/Tags), LLM-/VLM-gestützte
 OCR-Nachkorrektur über die vorhandene Ollama-Anbindung, optionale
-Dashboard-Authentifizierung, englische Oberfläche sowie ein
+Dashboard-Authentifizierung, englische CLI-Ausgaben sowie ein
 Curator-Agent, der Inbox-Notizen in die Vault-Struktur einsortiert.
+Das Dashboard selbst ist bereits zweisprachig (Deutsch/Englisch,
+Seitenleiste bzw. `DOC2VAULT_LANG`).
 
 ## Lizenz
 

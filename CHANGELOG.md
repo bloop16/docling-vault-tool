@@ -4,6 +4,15 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.2.0] – 2026-07-19
+
+### Added
+- **Englische Oberfläche**: Sprachwahl (Deutsch/Englisch) oben in der
+  Seitenleiste, Vorbelegung über `DOC2VAULT_LANG=de|en`. Deutsch bleibt
+  Standard und Fallback — fehlende Übersetzungen führen nie zu Lücken.
+  Auch die Fehlerhinweise der Konvertierung werden bei der Anzeige im
+  Dashboard übersetzt. CLI-Ausgaben bleiben in dieser Ausbaustufe Deutsch.
+
 ## [1.1.0] – 2026-07-19
 
 ### Added
