@@ -93,6 +93,20 @@ Excel-Sheet-Limit und den Umgang mit Originaldateien.
 
 ## 4. Konvertierung
 
+**Eingabeformate:** PDF, DOCX, XLSX, PPTX, HTML, Markdown sowie
+**Bilder** (PNG/JPG/JPEG/TIF/TIFF/WebP — für Scans OCR aktivieren, sonst
+entstehen leere Notizen; das Tool warnt entsprechend), **CSV**,
+**AsciiDoc** (`.adoc`), **E-Mail** (`.eml`; Outlook-`.msg` wird von Docling
+nicht unterstützt) und **EPUB**. E-Mail und EPUB sind Basisunterstützung —
+komplexe Anhänge/Layouts kommen als einfacher Text an.
+
+**Duplikate:** Inhaltsgleiche Quelldateien (SHA-256-Vergleich, mit
+Größen-Vorfilter) werden beim Scan erkannt und gemeldet. Mit
+`--duplicates skip` (CLI) bzw. der Job-Option „Inhaltsgleiche neue Dateien
+überspringen" wird je Gruppe nur eine Datei konvertiert. Nicht zu
+verwechseln mit der Idempotenz: „unverändert" ist dieselbe Datei beim
+Wiederholungslauf, „Duplikat" eine zweite Datei mit gleichem Inhalt.
+
 **Docling-Funktionen** (Seitenleiste bzw. CLI-Flags):
 
 - **Bilder extrahieren** (`--no-images` zum Abschalten): eingebettete Grafiken

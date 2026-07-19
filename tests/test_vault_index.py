@@ -94,7 +94,8 @@ def test_incremental_update(vault):
     conn = vi.open_db(vault)
     conn.execute("INSERT INTO chunks(path, chunk_index, heading, text, text_hash) "
                  "VALUES('Inbox/Protokoll.md', 0, '', 'x', 'h')")
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     (vault / "Inbox" / "Protokoll.md").unlink()
     s4 = vi.update_index(vault)
     assert s4.removed == 1 and s4.total == 1

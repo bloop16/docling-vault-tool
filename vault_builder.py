@@ -40,7 +40,6 @@ import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import frontmatter
 
@@ -131,7 +130,7 @@ class _AttachmentStore:
                 if p.is_file():
                     self._by_name.setdefault(p.name, p)
 
-    def moved_name(self, source: Path) -> Optional[str]:
+    def moved_name(self, source: Path) -> str | None:
         """Finaler Name, falls ``source`` in diesem Lauf schon verschoben wurde."""
         return self._moved_sources.get(source)
 
@@ -164,7 +163,7 @@ class _AttachmentStore:
         return name, renamed
 
 
-def _resolve_image_path(md_path: Path, raw_target: str) -> Optional[Path]:
+def _resolve_image_path(md_path: Path, raw_target: str) -> Path | None:
     """Loest ein Markdown-Bildziel relativ zur Notiz auf (ohne Existenzcheck)."""
     if raw_target.startswith(("http://", "https://", "data:")):
         return None
@@ -329,7 +328,7 @@ def build_vault(
 # CLI
 # ---------------------------------------------------------------------------
 
-def _run_cli(argv: Optional[list[str]] = None) -> int:
+def _run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Post-Processing: rohen Docling-Output in einen "
         "Obsidian-Vault ueberfuehren (Inbox, Attachments, Wikilinks, "

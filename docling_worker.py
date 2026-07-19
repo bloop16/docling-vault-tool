@@ -29,10 +29,10 @@ import shutil
 import sys
 import time
 import traceback
-from dataclasses import dataclass, asdict
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
 
 # Von Docling nativ unterstuetzte Eingabeformate, die dieses Tool anfasst.
 SUPPORTED_EXTENSIONS = {
@@ -43,7 +43,62 @@ SUPPORTED_EXTENSIONS = {
     ".html",
     ".htm",
     ".md",
+    # Bilder: laufen durch die PDF-Pipeline (OCR-Einstellungen greifen).
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".webp",
+    # Weitere Docling-Formate (Basisunterstuetzung).
+    ".csv",
+    ".adoc",
+    ".asciidoc",
+    ".eml",
+    ".epub",
 }
+
+# Teilmenge: Bildformate (fuer die OCR-Warnung im Integrationsplan).
+IMAGE_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+
+
+def hash_file(path: os.PathLike | str, chunk: int = 1 << 20) -> str:
+    """SHA-256 ueber den Dateiinhalt (gestreamt)."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def find_duplicate_files(
+    files: Iterable[os.PathLike | str],
+) -> dict[str, list[Path]]:
+    """Gruppen inhaltsgleicher Dateien: ``{sha256: [pfade...]}``.
+
+    Nur Gruppen mit >= 2 Dateien werden geliefert. Billig gehalten:
+    zunaechst nach Dateigroesse vorgruppiert, gehasht werden nur Dateien,
+    deren Groesse mehrfach vorkommt.
+    """
+    by_size: dict[int, list[Path]] = {}
+    for f in files:
+        p = Path(f)
+        try:
+            by_size.setdefault(p.stat().st_size, []).append(p)
+        except OSError:
+            continue
+    groups: dict[str, list[Path]] = {}
+    for candidates in by_size.values():
+        if len(candidates) < 2:
+            continue
+        for p in candidates:
+            try:
+                groups.setdefault(hash_file(p), []).append(p)
+            except OSError:
+                continue
+    return {h: paths for h, paths in groups.items() if len(paths) >= 2}
 
 
 @dataclass
@@ -70,7 +125,7 @@ class ConverterConfig:
     images_scale: float = 2.0
     do_table_structure: bool = True
     on_success: str = "keep"
-    archive_dir: Optional[str] = None
+    archive_dir: str | None = None
 
     # --- Ablage/Integration im Zielordner ---------------------------------
     # notes_subdir:      Unterordner im Ziel, unter dem die .md abgelegt werden
@@ -103,24 +158,24 @@ class ConversionResult:
 
     source_path: str
     success: bool
-    output_path: Optional[str] = None
-    assets_folder: Optional[str] = None
+    output_path: str | None = None
+    assets_folder: str | None = None
     num_images: int = 0
     duration_s: float = 0.0
     # Fehlerinformationen (nur bei success=False gesetzt):
-    error: Optional[str] = None           # knappe Zeile: "Typ: Nachricht"
-    error_category: Optional[str] = None  # klassifiziert, z. B. "passwortgeschützt"
-    error_hint: Optional[str] = None      # Klartext-Handlungshinweis
-    error_detail: Optional[str] = None    # voller Traceback (echte Ursache)
+    error: str | None = None           # knappe Zeile: "Typ: Nachricht"
+    error_category: str | None = None  # klassifiziert, z. B. "passwortgeschützt"
+    error_hint: str | None = None      # Klartext-Handlungshinweis
+    error_detail: str | None = None    # voller Traceback (echte Ursache)
     # Nachbearbeitung des Originals (archive/delete):
-    moved_to: Optional[str] = None
+    moved_to: str | None = None
     # True, wenn mit speicherschonenden Einstellungen konvertiert wurde
     # (Riesenseiten-Erkennung oder automatischer Wiederholungsversuch).
     reduced_mode: bool = False
     # "pypdfium", wenn erst der alternative PDF-Parser die Datei laden konnte.
-    pdf_backend: Optional[str] = None
+    pdf_backend: str | None = None
     # Konvertierung ok, aber Archivieren/Loeschen des Originals schlug fehl.
-    post_action_error: Optional[str] = None
+    post_action_error: str | None = None
 
 
 def _mute_streamlit_bare_mode_warning() -> None:
@@ -160,7 +215,7 @@ _mute_torch_pin_memory_warning()
 HUGE_PAGE_AREA_PT2 = 2_500_000
 
 
-def _reduced_config(config: "ConverterConfig") -> "ConverterConfig":
+def _reduced_config(config: ConverterConfig) -> ConverterConfig:
     """Speicherschonende Variante einer Konfiguration.
 
     Bildskalierung 1.0 und keine Bildextraktion -- die Hauptspeicherfresser
@@ -172,7 +227,7 @@ def _reduced_config(config: "ConverterConfig") -> "ConverterConfig":
     return replace(config, images_scale=1.0, generate_picture_images=False)
 
 
-def _is_reduced(config: "ConverterConfig") -> bool:
+def _is_reduced(config: ConverterConfig) -> bool:
     return config.images_scale <= 1.0 and not config.generate_picture_images
 
 
@@ -229,7 +284,7 @@ def _make_ocr_options(engine: str, languages: str):
     )
 
 
-def check_ocr_engine(config: "ConverterConfig") -> Optional[str]:
+def check_ocr_engine(config: ConverterConfig) -> str | None:
     """Vorab-Pruefung der OCR-Engine; Warntext oder None.
 
     Wichtigster Fall: Tesseract ist als CLI-Aufruf realisiert -- fehlt die
@@ -252,7 +307,7 @@ def check_ocr_engine(config: "ConverterConfig") -> Optional[str]:
 def check_paths(
     input_dir: os.PathLike | str | None,
     output_dir: os.PathLike | str | None,
-) -> Optional[str]:
+) -> str | None:
     """Erkennt Quell-/Ziel-Konstellationen, die zwangslaeufig zu "0 Dateien
     gefunden" fuehren; Fehlertext oder None.
 
@@ -289,8 +344,8 @@ def check_paths(
 
 
 def build_converter(
-    config: Optional[ConverterConfig] = None,
-    pdf_backend: Optional[str] = None,
+    config: ConverterConfig | None = None,
+    pdf_backend: str | None = None,
 ):
     """Erzeugt einen konfigurierten Docling ``DocumentConverter``.
 
@@ -328,9 +383,14 @@ def build_converter(
 
         pdf_option_kwargs["backend"] = PyPdfiumDocumentBackend
 
+    # Bilder (PNG/JPG/TIFF/...) routet Docling durch die PDF-Pipeline --
+    # nur mit expliziter Option greifen OCR-/Bild-Einstellungen auch dort.
+    from docling.document_converter import ImageFormatOption
+
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(**pdf_option_kwargs),
+            InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
         }
     )
 
@@ -403,14 +463,14 @@ class VaultProfile:
     vault_type: str            # "obsidian" | "logseq" | "folder" | "new"
     note_count: int
     top_level_folders: list[str]
-    attachment_folder_raw: Optional[str]      # roher Wert aus .obsidian/app.json
-    attachment_folder_resolved: Optional[str]  # Ordnername oder None (=Wurzel)
+    attachment_folder_raw: str | None      # roher Wert aus .obsidian/app.json
+    attachment_folder_resolved: str | None  # Ordnername oder None (=Wurzel)
     attachment_note_relative: bool             # Anhaenge neben der Notiz?
-    uses_frontmatter: Optional[bool]
+    uses_frontmatter: bool | None
     observations: list[str]
 
 
-def _read_obsidian_attachment_setting(target: Path) -> Optional[str]:
+def _read_obsidian_attachment_setting(target: Path) -> str | None:
     """Liest ``attachmentFolderPath`` aus ``.obsidian/app.json`` (falls vorhanden)."""
     app_json = target / ".obsidian" / "app.json"
     if not app_json.is_file():
@@ -423,7 +483,7 @@ def _read_obsidian_attachment_setting(target: Path) -> Optional[str]:
     return val if isinstance(val, str) else None
 
 
-def _detect_frontmatter_usage(target: Path, sample_limit: int = 25) -> Optional[bool]:
+def _detect_frontmatter_usage(target: Path, sample_limit: int = 25) -> bool | None:
     """Prueft an einer Stichprobe, ob bestehende Notizen YAML-Frontmatter nutzen."""
     checked = 0
     with_fm = 0
@@ -433,7 +493,7 @@ def _detect_frontmatter_usage(target: Path, sample_limit: int = 25) -> Optional[
             if not name.lower().endswith(".md"):
                 continue
             try:
-                with open(Path(root) / name, "r", encoding="utf-8", errors="ignore") as fh:
+                with open(Path(root) / name, encoding="utf-8", errors="ignore") as fh:
                     first = fh.readline().strip()
             except OSError:
                 continue
@@ -480,7 +540,7 @@ def analyze_vault(target_dir: os.PathLike | str) -> VaultProfile:
 
     # Anzahl vorhandener Notizen (begrenzt gezaehlt, um grosse Vaults zu schonen).
     note_count = 0
-    for root, dirs, filenames in os.walk(target):
+    for _root, dirs, filenames in os.walk(target):
         dirs[:] = [d for d in dirs if d not in _VAULT_SKIP_DIRS and not d.startswith(".")]
         note_count += sum(1 for n in filenames if n.lower().endswith(".md"))
         if note_count > 100000:
@@ -492,7 +552,7 @@ def analyze_vault(target_dir: os.PathLike | str) -> VaultProfile:
     attach_raw = _read_obsidian_attachment_setting(target)
     attach_note_relative = bool(attach_raw and attach_raw.startswith("./"))
     if attach_raw in (None, "", "/"):
-        attach_resolved: Optional[str] = None
+        attach_resolved: str | None = None
     elif attach_note_relative:
         attach_resolved = attach_raw[2:].strip("/") or None
     else:
@@ -544,7 +604,7 @@ DEFAULT_IMPORT_SUBDIR = "Docling Import"
 
 
 def recommend_config(
-    profile: VaultProfile, base: Optional[ConverterConfig] = None
+    profile: VaultProfile, base: ConverterConfig | None = None
 ) -> ConverterConfig:
     """Leitet aus einem ``VaultProfile`` einen empfohlenen Integrationsplan ab.
 
@@ -782,8 +842,8 @@ def _trim_xlsx(source: Path, keep: int) -> Path:
 def _apply_post_action(
     source: Path,
     config: ConverterConfig,
-    input_root: Optional[os.PathLike | str],
-) -> Optional[str]:
+    input_root: os.PathLike | str | None,
+) -> str | None:
     """Verschiebt/loescht das Original nach erfolgreicher Konvertierung.
 
     Gibt das Zielverzeichnis (bei ``archive``) bzw. ``"<geloescht>"`` zurueck,
@@ -807,8 +867,8 @@ def _apply_post_action(
 def convert_single_file(
     source_path: os.PathLike | str,
     output_dir: os.PathLike | str,
-    input_root: Optional[os.PathLike | str] = None,
-    config: Optional[ConverterConfig] = None,
+    input_root: os.PathLike | str | None = None,
+    config: ConverterConfig | None = None,
     converter=None,
 ) -> ConversionResult:
     """Konvertiert eine Datei nach Markdown und extrahiert eingebettete Bilder.
@@ -855,9 +915,9 @@ def convert_single_file(
     # XLSX-Sonderfall: Arbeitsmappen mit zu vielen Blaettern begrenzen oder
     # ueberspringen (Zaehlung ist billig, kein Docling noetig).
     convert_input: Path = source
-    trimmed_tmp: Optional[Path] = None
-    sheets_total: Optional[int] = None
-    sheets_converted: Optional[int] = None
+    trimmed_tmp: Path | None = None
+    sheets_total: int | None = None
+    sheets_converted: int | None = None
     if source.suffix.lower() == ".xlsx" and config.xlsx_sheet_limit > 0:
         names = xlsx_sheet_names(source)
         if len(names) > config.xlsx_sheet_limit:
@@ -906,7 +966,7 @@ def convert_single_file(
         )
 
         num_images = 0
-        assets_rel: Optional[str] = None
+        assets_rel: str | None = None
         if assets_dir.exists():
             num_images = sum(1 for p in assets_dir.iterdir() if p.is_file())
             if num_images:
@@ -996,9 +1056,9 @@ _WORKER_CONVERTER_REDUCED = None
 # weglassen oder Riesenseiten wieder mit voller Skalierung rendern.
 _WORKER_CONVERTER_PDFIUM = None
 _WORKER_CONVERTER_PDFIUM_REDUCED = None
-_WORKER_CONFIG: Optional[ConverterConfig] = None
-_WORKER_OUTPUT: Optional[Path] = None
-_WORKER_ROOT: Optional[Path] = None
+_WORKER_CONFIG: ConverterConfig | None = None
+_WORKER_OUTPUT: Path | None = None
+_WORKER_ROOT: Path | None = None
 
 
 def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> None:
@@ -1255,7 +1315,7 @@ def run_conversion_batch(
             ).strip()
             _emit(first_fail)
             continue
-        retry_result: Optional[ConversionResult] = None
+        retry_result: ConversionResult | None = None
         pool_broke = False
         pool = ProcessPoolExecutor(
             max_workers=1,
@@ -1302,7 +1362,7 @@ def run_conversion_batch(
 # CLI (nackte Nutzung ohne Streamlit)
 # ---------------------------------------------------------------------------
 
-def _run_cli(argv: Optional[list[str]] = None) -> int:
+def _run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Docling-Batch-Konvertierung (PDF/DOCX/XLSX -> Markdown)."
     )
@@ -1408,6 +1468,14 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         "FTS5-Index trotzdem vollstaendig durch.",
     )
     parser.add_argument(
+        "--duplicates",
+        choices=["convert", "skip"],
+        default="convert",
+        help="Umgang mit inhaltsgleichen Quelldateien: convert = alle "
+        "konvertieren und nur melden (Default), skip = je Gruppe nur die "
+        "erste Datei konvertieren",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -1469,6 +1537,19 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         print(f"Keine unterstuetzten Dateien in {input_root} gefunden.")
         return 0
 
+    # Duplikate (inhaltsgleiche Dateien) erkennen -- nicht zu verwechseln mit
+    # der Idempotenz (unveraenderte Datei beim Wiederholungslauf).
+    duplicate_groups = find_duplicate_files(files)
+    skipped_duplicates: list[Path] = []
+    if duplicate_groups and args.duplicates == "skip":
+        for paths in duplicate_groups.values():
+            # Deterministisch die erste (sortierte) Datei behalten.
+            keep, *rest = sorted(paths)
+            skipped_duplicates.extend(rest)
+        skip_set = {str(p) for p in skipped_duplicates}
+        files = [f for f in files if str(f) not in skip_set]
+        total = len(files)
+
     # Plan EINMAL fuer den gesamten Batch anzeigen und bestaetigen lassen.
     print("\n=== Zielordner-Analyse ===")
     for obs in profile.observations:
@@ -1477,6 +1558,21 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     for line in describe_plan(profile, config):
         print(f"  {line}")
     print(f"  Zu konvertieren: {total} Datei(en)")
+    if duplicate_groups:
+        dup_files = sum(len(p) for p in duplicate_groups.values())
+        if args.duplicates == "skip":
+            print(f"  Duplikate: {len(duplicate_groups)} Gruppe(n), "
+                  f"{len(skipped_duplicates)} inhaltsgleiche Datei(en) "
+                  "werden uebersprungen (--duplicates skip).")
+        else:
+            print(f"  Duplikate: {len(duplicate_groups)} Gruppe(n) mit "
+                  f"{dup_files} inhaltsgleichen Dateien gefunden -- alle "
+                  "werden konvertiert (--duplicates skip zum Ueberspringen).")
+    if not config.do_ocr and any(
+        Path(f).suffix.lower() in IMAGE_INPUT_EXTENSIONS for f in files
+    ):
+        print("  WARNUNG: Bilddateien im Batch, aber OCR ist aus -- "
+              "gescannte Bilder ergeben leere Notizen (--ocr aktivieren).")
     if args.build_vault:
         print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
               "Wikilinks + Frontmatter")

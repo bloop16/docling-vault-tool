@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -388,3 +387,36 @@ def test_post_action_failure_keeps_success(tmp_path, fake_converter, monkeypatch
     assert res.success
     assert res.moved_to is None
     assert res.post_action_error and "PermissionError" in res.post_action_error
+
+
+# --- Phase B: Formaterweiterung + Duplikaterkennung -------------------------
+
+def test_new_formats_in_whitelist(tmp_path):
+    for name in ("scan.png", "foto.jpg", "daten.csv", "doku.adoc",
+                 "mail.eml", "buch.epub"):
+        (tmp_path / name).write_text("x")
+    (tmp_path / "nicht.msg").write_text("x")   # von Docling nicht unterstuetzt
+
+    names = sorted(f.name for f in dw.discover_files(tmp_path))
+    assert names == ["buch.epub", "daten.csv", "doku.adoc",
+                     "foto.jpg", "mail.eml", "scan.png"]
+
+
+def test_find_duplicate_files(tmp_path):
+    a = tmp_path / "a.pdf"
+    b = tmp_path / "unterordner"
+    b.mkdir()
+    dup = b / "kopie.pdf"
+    a.write_bytes(b"gleicher inhalt")
+    dup.write_bytes(b"gleicher inhalt")
+    (tmp_path / "anders.pdf").write_bytes(b"anderer inhalt!")
+    (tmp_path / "gleichgross.pdf").write_bytes(b"anderer inhalt?")
+
+    groups = dw.find_duplicate_files(
+        [a, dup, tmp_path / "anders.pdf", tmp_path / "gleichgross.pdf"]
+    )
+    assert len(groups) == 1
+    paths = next(iter(groups.values()))
+    assert sorted(p.name for p in paths) == ["a.pdf", "kopie.pdf"]
+    # Nicht existierende Dateien stoeren nicht.
+    assert dw.find_duplicate_files([tmp_path / "fehlt.pdf"]) == {}

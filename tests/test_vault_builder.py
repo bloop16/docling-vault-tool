@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import frontmatter
-import pytest
 
 import vault_builder as vb
 
@@ -112,7 +111,7 @@ def test_image_name_collision_and_dedup(tmp_path):
         d = out / stem
         d.mkdir(parents=True)
         (d / "img.png").write_bytes(payload)
-        (d / f"{stem}.md").write_text(f"![x](img.png)\n", encoding="utf-8")
+        (d / f"{stem}.md").write_text("![x](img.png)\n", encoding="utf-8")
 
     vault = tmp_path / "vault"
     summary = vb.build_vault(out, vault)

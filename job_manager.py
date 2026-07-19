@@ -33,18 +33,21 @@ CLI::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
 
 import docling_worker as dw
+
+# Bibliotheks-Logging (Dashboard/Dienste); CLI-Nutzerausgabe bleibt print.
+_LOG = logging.getLogger("doc2vault.jobs")
 
 # Felder von ConverterConfig, die pro Job gespeichert/rekonstruiert werden.
 _CONFIG_FIELDS = (
@@ -122,12 +125,15 @@ class Job:
     target: str
     config: dict = field(default_factory=dict)
     poll_interval: int = 30          # Sekunden, fuer watch
-    max_workers: Optional[int] = None
+    max_workers: int | None = None
     created_at: str = ""
-    last_run_at: Optional[str] = None
+    last_run_at: str | None = None
     # Nach jedem Lauf mit Neukonvertierungen zusaetzlich Vault-Build
     # (Inbox/, Attachments/, Wikilinks) + Such-Index ausfuehren.
     build_vault: bool = False
+    # Neue Dateien, deren Inhalt bereits konvertiert wurde (oder die
+    # untereinander inhaltsgleich sind), ueberspringen statt konvertieren.
+    skip_duplicates: bool = False
 
     def converter_config(self) -> dw.ConverterConfig:
         """Rekonstruiert die ``ConverterConfig`` aus dem gespeicherten Plan."""
@@ -144,6 +150,9 @@ class ChangeSet:
     unchanged: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)   # im Manifest, nicht mehr da
     retry: list[str] = field(default_factory=list)     # zuvor fehlgeschlagen
+    # Inhaltsgleich mit bereits Konvertiertem bzw. anderer neuer Datei
+    # (nur befuellt, wenn job.skip_duplicates aktiv ist).
+    duplicates: list[str] = field(default_factory=list)
 
     @property
     def todo(self) -> list[str]:
@@ -151,13 +160,16 @@ class ChangeSet:
         return self.new + self.changed + self.retry
 
     def counts(self) -> dict[str, int]:
-        return {
+        result = {
             "neu": len(self.new),
             "geaendert": len(self.changed),
             "unveraendert": len(self.unchanged),
             "entfernt": len(self.removed),
             "wiederholung": len(self.retry),
         }
+        if self.duplicates:
+            result["duplikate"] = len(self.duplicates)
+        return result
 
 
 @dataclass
@@ -176,10 +188,10 @@ class JobRunSummary:
     dry_run: bool = False
     skipped_locked: bool = False
     # Ergebnis des optionalen Vault-Build-/Index-Schritts (job.build_vault):
-    build_notes: Optional[int] = None
-    build_images: Optional[int] = None
-    index_total: Optional[int] = None
-    build_error: Optional[str] = None
+    build_notes: int | None = None
+    build_images: int | None = None
+    index_total: int | None = None
+    build_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +264,7 @@ def _jobs_write_lock(timeout: float = 10.0):
             lock.unlink(missing_ok=True)
 
 
-def get_job(job_ref: str) -> Optional[Job]:
+def get_job(job_ref: str) -> Job | None:
     """Findet einen Job per ID oder (eindeutigem) Namen."""
     jobs = load_jobs()
     for j in jobs:
@@ -274,9 +286,9 @@ def add_job(
     name: str,
     source: str,
     target: str,
-    config: Optional[dw.ConverterConfig] = None,
+    config: dw.ConverterConfig | None = None,
     poll_interval: int = 30,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     build_vault: bool = False,
 ) -> Job:
     """Legt einen Job an. Ist keine Config angegeben, wird sie aus dem Ziel
@@ -314,11 +326,12 @@ def add_job(
 
 def update_job(
     job_ref: str,
-    config_updates: Optional[dict] = None,
-    poll_interval: Optional[int] = None,
-    max_workers: Optional[int] = None,
-    build_vault: Optional[bool] = None,
-) -> Optional[Job]:
+    config_updates: dict | None = None,
+    poll_interval: int | None = None,
+    max_workers: int | None = None,
+    build_vault: bool | None = None,
+    skip_duplicates: bool | None = None,
+) -> Job | None:
     """Aendert Einstellungen eines bestehenden Jobs in-place.
 
     Wichtig gegenueber rm + add: Manifest und Historie bleiben erhalten --
@@ -346,6 +359,8 @@ def update_job(
                 job.max_workers = max_workers
             if build_vault is not None:
                 job.build_vault = build_vault
+            if skip_duplicates is not None:
+                job.skip_duplicates = skip_duplicates
             save_jobs(jobs)
             return job
     return None
@@ -426,11 +441,9 @@ RETRY_LIMIT = 3
 
 
 def _hash_file(path: Path, chunk: int = 1 << 20) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for block in iter(lambda: fh.read(chunk), b""):
-            h.update(block)
-    return h.hexdigest()
+    # Delegiert an docling_worker.hash_file (eine Implementierung fuer
+    # Manifest-Idempotenz UND Duplikaterkennung).
+    return dw.hash_file(path, chunk)
 
 
 def _content_changed(entry: dict, stat: os.stat_result, path: Path) -> bool:
@@ -447,7 +460,7 @@ def _content_changed(entry: dict, stat: os.stat_result, path: Path) -> bool:
     return True
 
 
-def scan_changes(job: Job, manifest: Optional[dict] = None) -> ChangeSet:
+def scan_changes(job: Job, manifest: dict | None = None) -> ChangeSet:
     """Vergleicht den Quellordner mit dem Manifest (schnell via Groesse/mtime,
     Hash nur bei Verdacht)."""
     if manifest is None:
@@ -489,6 +502,30 @@ def scan_changes(job: Job, manifest: Optional[dict] = None) -> ChangeSet:
         # "entfernt" im Sinne einer verschwundenen Quelldatei.
         if key not in seen and not entry.get("moved_to"):
             cs.removed.append(key)
+
+    # Duplikate: NEUE Dateien, deren Inhalt bereits konvertiert wurde (Hash
+    # im Manifest) oder die untereinander inhaltsgleich sind. Nur neue
+    # Dateien werden gehasht -- kein Vollscan. Nicht zu verwechseln mit
+    # "unveraendert" (dieselbe Datei, Idempotenz).
+    if job.skip_duplicates and cs.new:
+        known_hashes = {
+            e.get("hash") for e in manifest.values()
+            if e.get("status") == "ok" and e.get("hash")
+        }
+        kept: list[str] = []
+        seen_new_hashes: set[str] = set()
+        for key in sorted(cs.new):
+            try:
+                digest = _hash_file(Path(key))
+            except OSError:
+                kept.append(key)
+                continue
+            if digest in known_hashes or digest in seen_new_hashes:
+                cs.duplicates.append(key)
+            else:
+                seen_new_hashes.add(digest)
+                kept.append(key)
+        cs.new = kept
     return cs
 
 
@@ -527,9 +564,9 @@ def _acquire_lock(job_id: str, stale_after: float = 6 * 3600) -> Path:
 def _default_convert_batch(
     files: list[str],
     job: Job,
-    max_workers: Optional[int],
-    progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]],
-) -> list["dw.ConversionResult"]:
+    max_workers: int | None,
+    progress: Callable[[int, int, dw.ConversionResult], None] | None,
+) -> list[dw.ConversionResult]:
     """Konvertiert eine Dateiliste ueber den absturzsicheren Batch-Runner."""
     config = job.converter_config()
     workers = max_workers or job.max_workers or max(1, (os.cpu_count() or 2) - 1)
@@ -542,9 +579,9 @@ def run_job(
     job: Job,
     dry_run: bool = False,
     force: bool = False,
-    max_workers: Optional[int] = None,
-    progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]] = None,
-    convert_batch: Optional[Callable] = None,
+    max_workers: int | None = None,
+    progress: Callable[[int, int, dw.ConversionResult], None] | None = None,
+    convert_batch: Callable | None = None,
     trigger: str = "manuell",
 ) -> JobRunSummary:
     """Fuehrt einen Job inkrementell aus (oder zeigt bei ``dry_run`` nur den Plan).
@@ -597,7 +634,7 @@ def run_job(
     # kopiert), muessen die Vor-Werte ins Manifest -- der naechste Scan sieht
     # die Datei dann als "geaendert" und konvertiert nach. Mit Nach-Werten
     # gaelte der halbfertige Stand faelschlich als aktuell.
-    pre_stat: dict[str, tuple[Optional[int], Optional[float]]] = {}
+    pre_stat: dict[str, tuple[int | None, float | None]] = {}
     for src in todo:
         try:
             st = Path(src).stat()
@@ -744,11 +781,11 @@ def watchdog_available() -> bool:
 
 def watch_job(
     job: Job,
-    stop: Optional[Callable[[], bool]] = None,
-    on_cycle: Optional[Callable[[JobRunSummary], None]] = None,
-    max_cycles: Optional[int] = None,
+    stop: Callable[[], bool] | None = None,
+    on_cycle: Callable[[JobRunSummary], None] | None = None,
+    max_cycles: int | None = None,
     use_events: bool | str = "auto",
-    convert_batch: Optional[Callable] = None,
+    convert_batch: Callable | None = None,
 ) -> None:
     """Ueberwacht den Quellordner und konvertiert Aenderungen laufend.
 
@@ -804,8 +841,7 @@ def watch_job(
                 # beim naechsten Intervall erneut versuchen. Konfigurations-
                 # fehler (RuntimeError, z. B. fehlende OCR-Engine) brechen
                 # weiterhin hart ab.
-                print(f"WARNUNG watch: Zyklus übersprungen: {exc}",
-                      file=sys.stderr)
+                _LOG.warning("watch: Zyklus übersprungen: %s", exc)
                 summary = None
             if summary and on_cycle:
                 on_cycle(summary)
@@ -850,7 +886,11 @@ def _print_summary(job: Job, s: JobRunSummary) -> None:
               file=sys.stderr)
 
 
-def _run_cli(argv: Optional[list[str]] = None) -> int:
+def _run_cli(argv: list[str] | None = None) -> int:
+    # doc2vault-Logger sichtbar machen (z. B. watch-Warnungen im Dienstlog).
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
     parser = argparse.ArgumentParser(
         description="Sichere, inkrementelle Docling-Jobs (Ordner & Ordnerueberwachung)."
     )
@@ -907,6 +947,9 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     p_set.add_argument("--poll-interval", type=int, default=None)
     p_set.add_argument("--build-vault", choices=["on", "off"], default=None,
                        help="Vault-Build + Such-Index nach jedem Lauf")
+    p_set.add_argument("--skip-duplicates", choices=["on", "off"], default=None,
+                       help="Inhaltsgleiche neue Dateien ueberspringen "
+                       "(Vergleich per SHA-256 gegen bereits Konvertiertes)")
 
     sub.add_parser("list", help="Jobs auflisten")
     for name, helptext in (("plan", "Dry-Run: anstehende Aenderungen zeigen"),
@@ -988,7 +1031,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
         if args.images_scale is not None:
             cfg_updates["images_scale"] = args.images_scale
         if (not cfg_updates and args.workers is None
-                and args.poll_interval is None and args.build_vault is None):
+                and args.poll_interval is None and args.build_vault is None
+                and args.skip_duplicates is None):
             print("Nichts zu aendern (siehe --help fuer verfuegbare Optionen).",
                   file=sys.stderr)
             return 2
@@ -997,6 +1041,8 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
             poll_interval=args.poll_interval, max_workers=args.workers,
             build_vault=(None if args.build_vault is None
                          else args.build_vault == "on"),
+            skip_duplicates=(None if args.skip_duplicates is None
+                             else args.skip_duplicates == "on"),
         )
         if not job:
             print(f"Job nicht gefunden: {args.job}", file=sys.stderr)
