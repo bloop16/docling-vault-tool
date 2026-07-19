@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,15 +193,63 @@ def load_jobs() -> list[Job]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
+        # Korrupte Datei NICHT still als "keine Jobs" werten: das naechste
+        # save_jobs wuerde sonst alle Jobdefinitionen endgueltig verwerfen.
+        # Stattdessen sichern, damit der Nutzer sie wiederherstellen kann.
+        try:
+            path.replace(path.with_suffix(".json.corrupt"))
+        except OSError:
+            pass
         return []
     return [Job(**j) for j in data]
 
 
 def save_jobs(jobs: list[Job]) -> None:
-    _jobs_file().write_text(
+    # Atomar (tmp -> replace): ein mitten im Schreiben gekillter Prozess
+    # (watch-Dienst gestoppt, Stromausfall) darf jobs.json nicht abschneiden.
+    path = _jobs_file()
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
         json.dumps([asdict(j) for j in jobs], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    tmp.replace(path)
+
+
+@contextmanager
+def _jobs_write_lock(timeout: float = 10.0):
+    """Serialisiert Read-Modify-Write auf ``jobs.json``.
+
+    Ohne Sperre kann ein watch-Prozess (schreibt ``last_run_at`` nach jedem
+    Zyklus) eine parallel im Dashboard gemachte Aenderung (z. B. OCR-Engine-
+    Wechsel) mit seinem aelteren Snapshot still ueberschreiben. Nach
+    ``timeout`` wird notfalls ohne Sperre fortgefahren, damit ein verwaistes
+    Lock niemals alle Job-Operationen blockiert.
+    """
+    lock = config_dir() / "jobs.json.lock"
+    deadline = time.monotonic() + timeout
+    acquired = False
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 60:
+                    lock.unlink(missing_ok=True)   # verwaiste Sperre
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if acquired:
+            lock.unlink(missing_ok=True)
 
 
 def get_job(job_ref: str) -> Optional[Job]:
@@ -238,26 +287,28 @@ def add_job(
     if config is None:
         config = dw.recommend_config(dw.analyze_vault(target))
     cfg_dict = {k: getattr(config, k) for k in _CONFIG_FIELDS}
-    jobs = load_jobs()
-    existing = {j.id for j in jobs}
-    base = _slug(name)
-    job_id = base
-    n = 2
-    while job_id in existing:
-        job_id = f"{base}-{n}"
-        n += 1
     target_path = Path(target).resolve()
     target_path.mkdir(parents=True, exist_ok=True)  # Ziel bei Bedarf anlegen
-    job = Job(
-        id=job_id, name=name,
-        source=str(Path(source).resolve()),
-        target=str(target_path),
-        config=cfg_dict, poll_interval=poll_interval, max_workers=max_workers,
-        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        build_vault=build_vault,
-    )
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        existing = {j.id for j in jobs}
+        base = _slug(name)
+        job_id = base
+        n = 2
+        while job_id in existing:
+            job_id = f"{base}-{n}"
+            n += 1
+        job = Job(
+            id=job_id, name=name,
+            source=str(Path(source).resolve()),
+            target=str(target_path),
+            config=cfg_dict, poll_interval=poll_interval,
+            max_workers=max_workers,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            build_vault=build_vault,
+        )
+        jobs.append(job)
+        save_jobs(jobs)
     return job
 
 
@@ -275,35 +326,38 @@ def update_job(
     Fall: falsch gewaehlte OCR-Engine (z. B. Tesseract ohne Installation)
     nachtraeglich auf EasyOCR umstellen.
     """
-    jobs = load_jobs()
+    if config_updates:
+        unknown = set(config_updates) - set(_CONFIG_FIELDS)
+        if unknown:
+            raise ValueError(f"Unbekannte Konfig-Felder: {sorted(unknown)}")
     target = get_job(job_ref)
     if not target:
         return None
-    for job in jobs:
-        if job.id != target.id:
-            continue
-        if config_updates:
-            unknown = set(config_updates) - set(_CONFIG_FIELDS)
-            if unknown:
-                raise ValueError(f"Unbekannte Konfig-Felder: {sorted(unknown)}")
-            job.config.update(config_updates)
-        if poll_interval is not None:
-            job.poll_interval = poll_interval
-        if max_workers is not None:
-            job.max_workers = max_workers
-        if build_vault is not None:
-            job.build_vault = build_vault
-        save_jobs(jobs)
-        return job
+    with _jobs_write_lock():
+        jobs = load_jobs()   # frisch laden: nicht mit altem Snapshot schreiben
+        for job in jobs:
+            if job.id != target.id:
+                continue
+            if config_updates:
+                job.config.update(config_updates)
+            if poll_interval is not None:
+                job.poll_interval = poll_interval
+            if max_workers is not None:
+                job.max_workers = max_workers
+            if build_vault is not None:
+                job.build_vault = build_vault
+            save_jobs(jobs)
+            return job
     return None
 
 
 def remove_job(job_ref: str) -> bool:
-    jobs = load_jobs()
     job = get_job(job_ref)
     if not job:
         return False
-    save_jobs([j for j in jobs if j.id != job.id])
+    with _jobs_write_lock():
+        jobs = load_jobs()
+        save_jobs([j for j in jobs if j.id != job.id])
     _manifest_file(job.id).unlink(missing_ok=True)
     _lock_file(job.id).unlink(missing_ok=True)
     _history_file(job.id).unlink(missing_ok=True)
@@ -456,7 +510,15 @@ def _acquire_lock(job_id: str, stale_after: float = 6 * 3600) -> Path:
         if age < stale_after:
             raise JobLockedError(f"Job '{job_id}' läuft bereits (Lock: {lock}).")
         lock.unlink(missing_ok=True)  # veraltete Sperre entfernen
-    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        # Race-Fenster: ein zweiter Prozess (Dashboard-Klick + watch-Rescan
+        # gleichzeitig) war schneller -- als normale Sperre melden, nicht als
+        # unbehandelter Traceback.
+        raise JobLockedError(
+            f"Job '{job_id}' läuft bereits (Lock: {lock})."
+        ) from None
     os.write(fd, f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}".encode())
     os.close(fd)
     return lock
@@ -530,44 +592,77 @@ def run_job(
     reduced = 0
     failed = 0
     failures: list = []
-    try:
-        Path(job.target).mkdir(parents=True, exist_ok=True)
-        results = batch(todo, job, max_workers, progress)
-        for res in results:
+    # Groesse/mtime VOR der Konvertierung erfassen: aendert sich die Quelle
+    # waehrend des Laufs (grosse Datei wird noch auf das Netzlaufwerk
+    # kopiert), muessen die Vor-Werte ins Manifest -- der naechste Scan sieht
+    # die Datei dann als "geaendert" und konvertiert nach. Mit Nach-Werten
+    # gaelte der halbfertige Stand faelschlich als aktuell.
+    pre_stat: dict[str, tuple[Optional[int], Optional[float]]] = {}
+    for src in todo:
+        try:
+            st = Path(src).stat()
+            pre_stat[src] = (st.st_size, st.st_mtime)
+        except OSError:
+            pre_stat[src] = (None, None)
+
+    # Lock-Heartbeat: die Sperre gilt nach 6 h als verwaist -- ein legitimer
+    # Langlauf (Erstkonvertierung tausender PDFs mit OCR) muss sie deshalb
+    # periodisch anfassen, sonst startet ein Parallellauf.
+    last_touch = time.monotonic()
+
+    def _progress_with_heartbeat(done: int, total: int, res) -> None:
+        nonlocal last_touch
+        if lock is not None and time.monotonic() - last_touch > 60:
             try:
-                stat = Path(res.source_path).stat()
-                size, mtime = stat.st_size, stat.st_mtime
+                os.utime(lock)
             except OSError:
-                size, mtime = None, None
-            entry = {
-                "status": "ok" if res.success else "error",
-                "size": size, "mtime": mtime,
-                "output_path": res.output_path,
-                "num_images": res.num_images,
-                "converted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            if res.moved_to:
-                entry["moved_to"] = res.moved_to
-            if res.success:
-                ok += 1
-                if getattr(res, "reduced_mode", False):
-                    reduced += 1
-                    entry["reduced"] = True
-                entry["attempts"] = 0
-                try:
-                    entry["hash"] = _hash_file(Path(res.source_path))
-                except OSError:
-                    entry["hash"] = None
-            else:
-                failed += 1
-                prev = manifest.get(res.source_path, {})
-                entry["attempts"] = int(prev.get("attempts", 0)) + 1
-                entry["error"] = res.error
-                entry["error_category"] = res.error_category
-                failures.append(res)
-            manifest[res.source_path] = entry
+                pass
+            last_touch = time.monotonic()
+        if progress:
+            progress(done, total, res)
+
+    try:
+        try:
+            Path(job.target).mkdir(parents=True, exist_ok=True)
+            results = batch(todo, job, max_workers, _progress_with_heartbeat)
+            for res in results:
+                size, mtime = pre_stat.get(res.source_path, (None, None))
+                entry = {
+                    "status": "ok" if res.success else "error",
+                    "size": size, "mtime": mtime,
+                    "output_path": res.output_path,
+                    "num_images": res.num_images,
+                    "converted_at": datetime.now(timezone.utc)
+                    .isoformat(timespec="seconds"),
+                }
+                if res.moved_to:
+                    entry["moved_to"] = res.moved_to
+                if getattr(res, "post_action_error", None):
+                    entry["post_action_error"] = res.post_action_error
+                if res.success:
+                    ok += 1
+                    if getattr(res, "reduced_mode", False):
+                        reduced += 1
+                        entry["reduced"] = True
+                    entry["attempts"] = 0
+                    try:
+                        entry["hash"] = _hash_file(Path(res.source_path))
+                    except OSError:
+                        entry["hash"] = None
+                else:
+                    failed += 1
+                    prev = manifest.get(res.source_path, {})
+                    entry["attempts"] = int(prev.get("attempts", 0)) + 1
+                    entry["error"] = res.error
+                    entry["error_category"] = res.error_category
+                    failures.append(res)
+                manifest[res.source_path] = entry
+        finally:
+            save_manifest(job.id, manifest)
     finally:
-        save_manifest(job.id, manifest)
+        # Eigenes finally: schlaegt save_manifest fehl (Platte voll,
+        # Windows-Sharing-Violation), muss die Sperre trotzdem fallen --
+        # sonst blockiert der Job bis zum 6-h-Stale-Timeout.
         if lock is not None:
             lock.unlink(missing_ok=True)
     _touch_last_run(job)
@@ -627,12 +722,15 @@ def run_job(
 
 
 def _touch_last_run(job: Job) -> None:
-    jobs = load_jobs()
-    for j in jobs:
-        if j.id == job.id:
-            j.last_run_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            save_jobs(jobs)
-            return
+    with _jobs_write_lock():
+        jobs = load_jobs()   # frisch laden: nicht mit altem Snapshot schreiben
+        for j in jobs:
+            if j.id == job.id:
+                j.last_run_at = datetime.now(timezone.utc).isoformat(
+                    timespec="seconds"
+                )
+                save_jobs(jobs)
+                return
 
 
 def watchdog_available() -> bool:
@@ -699,6 +797,15 @@ def watch_job(
             try:
                 summary = run_job(job, trigger="watch", convert_batch=convert_batch)
             except JobLockedError:
+                summary = None
+            except OSError as exc:
+                # Transient (Netzlaufwerk kurz weg, Datei gesperrt): der
+                # Dauerbetrieb-Dienst darf daran nicht sterben -- melden und
+                # beim naechsten Intervall erneut versuchen. Konfigurations-
+                # fehler (RuntimeError, z. B. fehlende OCR-Engine) brechen
+                # weiterhin hart ab.
+                print(f"WARNUNG watch: Zyklus übersprungen: {exc}",
+                      file=sys.stderr)
                 summary = None
             if summary and on_cycle:
                 on_cycle(summary)

@@ -163,3 +163,60 @@ def test_cli_smoke(tmp_path, capsys):
     assert rc == 0
     assert "1 Notiz(en)" in capsys.readouterr().out
     assert (tmp_path / "v" / "Inbox" / "n.md").exists()
+
+
+# --- Funde aus dem Code-Review (claude-skills code-reviewer) ----------------
+
+def test_repeated_image_reference_stays_linked(tmp_path):
+    """Zweimal referenziertes Bild: beide Referenzen werden Wikilinks."""
+    out = tmp_path / "out"
+    out.mkdir()
+    img = out / "logo.png"
+    img.write_bytes(b"\x89PNG\r\n123")
+    (out / "notiz.md").write_text(
+        "![](logo.png)\n\nText\n\n![](logo.png)\n", encoding="utf-8"
+    )
+    summary = vb.build_vault(out, tmp_path / "vault")
+    assert not summary.errors
+    note = next((tmp_path / "vault" / "Inbox").glob("*.md"))
+    body = note.read_text(encoding="utf-8")
+    assert body.count("![[logo.png]]") == 2
+    assert "](logo.png)" not in body
+
+
+def test_image_outside_roots_is_never_moved(tmp_path):
+    """Absolute Referenz auf fremde Datei: bleibt am Ursprungsort."""
+    elsewhere = tmp_path / "privat"
+    elsewhere.mkdir()
+    foreign = elsewhere / "foto.png"
+    foreign.write_bytes(b"\x89PNG\r\nxyz")
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "notiz.md").write_text(
+        f"![]({foreign.as_posix()})\n", encoding="utf-8"
+    )
+    vb.build_vault(out, tmp_path / "vault")
+    assert foreign.exists()          # Datenverlust am Quellort verhindert
+
+
+def test_slugify_windows_reserved_names():
+    assert vb.slugify("con") != "con"
+    assert vb.slugify("NUL") .lower() != "nul"
+    assert vb.slugify("com1").lower().split(".")[0] not in ("com1",)
+    assert vb.slugify("Bericht") == "Bericht"
+
+
+def test_angle_bracket_image_targets(tmp_path):
+    """![](<pfad mit leerzeichen.png>) wird ebenfalls umgeschrieben."""
+    out = tmp_path / "out"
+    out.mkdir()
+    img = out / "mein bild.png"
+    img.write_bytes(b"\x89PNG\r\nabc")
+    (out / "notiz.md").write_text(
+        "![](<mein bild.png>)\n", encoding="utf-8"
+    )
+    summary = vb.build_vault(out, tmp_path / "vault")
+    assert summary.images == 1
+    note = next((tmp_path / "vault" / "Inbox").glob("*.md"))
+    assert "![[mein bild.png]]" in note.read_text(encoding="utf-8")

@@ -22,7 +22,16 @@ from typing import BinaryIO
 
 
 class UnsafeZipError(ValueError):
-    """ZIP-Eintrag wuerde ausserhalb des Zielordners landen (Zip-Slip)."""
+    """ZIP-Eintrag wuerde ausserhalb des Zielordners landen (Zip-Slip),
+    oder das Archiv ueberschreitet die Entpack-Limits (Zip-Bomb)."""
+
+
+# Entpack-Limits: schuetzen den (Headless-)Server vor Zip-Bombs, die mit
+# wenigen KB Upload die Platte fuellen. Grosszuegig bemessen -- reale
+# Dokument-Archive bleiben weit darunter.
+MAX_ZIP_ENTRIES = 50_000
+MAX_ZIP_TOTAL_BYTES = 20 * 1024**3        # 20 GB unkomprimiert
+MAX_ZIP_RATIO = 300                        # Kompressionsrate je Eintrag
 
 
 def _member_target(dest: Path, member_name: str) -> Path:
@@ -57,9 +66,28 @@ def safe_extract_zip(
     extracted: list[Path] = []
     with zipfile.ZipFile(zip_source) as zf:
         # Erst ALLE Eintraege validieren, dann schreiben -- so bleibt bei einem
-        # boesartigen Archiv gar nichts zurueck.
+        # boesartigen Archiv gar nichts zurueck. Neben Zip-Slip werden auch
+        # Zip-Bombs abgefangen (Anzahl, Gesamtgroesse, Kompressionsrate).
+        infos = zf.infolist()
+        if len(infos) > MAX_ZIP_ENTRIES:
+            raise UnsafeZipError(
+                f"ZIP enthält {len(infos)} Einträge (Limit {MAX_ZIP_ENTRIES})."
+            )
+        total = sum(i.file_size for i in infos)
+        if total > MAX_ZIP_TOTAL_BYTES:
+            raise UnsafeZipError(
+                f"ZIP würde {format_size(total)} entpacken "
+                f"(Limit {format_size(MAX_ZIP_TOTAL_BYTES)})."
+            )
         targets: list[tuple[zipfile.ZipInfo, Path]] = []
-        for info in zf.infolist():
+        for info in infos:
+            if (info.compress_size > 0
+                    and info.file_size / info.compress_size > MAX_ZIP_RATIO
+                    and info.file_size > 10 * 1024 * 1024):
+                raise UnsafeZipError(
+                    f"ZIP-Eintrag mit verdächtiger Kompressionsrate "
+                    f"(mögliche Zip-Bomb): {info.filename!r}"
+                )
             targets.append((info, _member_target(dest, info.filename)))
         for info, target in targets:
             if info.is_dir():
@@ -93,6 +121,12 @@ def store_uploads(
             stored.extend(safe_extract_zip(fh, dest))
             continue
         target = dest / safe_name
+        # Namenskollision (z. B. 2024/rechnung.pdf + 2025/rechnung.pdf aus
+        # einem Ordner-Upload): niemals still ueberschreiben.
+        n = 2
+        while target.exists():
+            target = dest / f"{Path(safe_name).stem}-{n}{Path(safe_name).suffix}"
+            n += 1
         with open(target, "wb") as out:
             while chunk := fh.read(1 << 20):
                 out.write(chunk)

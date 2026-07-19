@@ -47,11 +47,21 @@ import frontmatter
 # Bild-Endungen, die als Attachment behandelt werden.
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tiff"}
 
-# Markdown-Bildreferenz: ![alt](ziel) -- Ziel ohne schliessende Klammer.
-_IMAGE_REF = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+# Markdown-Bildreferenz: ![alt](ziel) bzw. ![alt](<ziel mit leerzeichen>).
+_IMAGE_REF = re.compile(
+    r"!\[([^\]]*)\]\((?:<([^>]+)>|([^)\s]+))(?:\s+\"[^\"]*\")?\)"
+)
 
 # In Obsidian-Dateinamen/Wikilinks problematische Zeichen.
 _FORBIDDEN = re.compile(r"[\[\]#^|\\/:*?\"<>]")
+
+# Auf Windows reservierte Geraetenamen: als Dateiname (auch mit Endung)
+# nicht anlegbar -- "con.md" wuerde den Build abbrechen.
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 
 
 def slugify(name: str, max_length: int = 120) -> str:
@@ -63,7 +73,10 @@ def slugify(name: str, max_length: int = 120) -> str:
     slug = _FORBIDDEN.sub("-", name)
     slug = re.sub(r"\s+", " ", slug).strip(" .-")
     slug = re.sub(r"-{2,}", "-", slug)
-    return slug[:max_length].strip(" .-") or "notiz"
+    slug = slug[:max_length].strip(" .-") or "notiz"
+    if slug.split(".")[0].lower() in _WINDOWS_RESERVED:
+        slug = f"{slug}-datei"
+    return slug
 
 
 def short_hash(path: os.PathLike | str, length: int = 8) -> str:
@@ -95,6 +108,9 @@ class BuildSummary:
     note_collisions: int = 0
     image_collisions: int = 0
     results: list[BuildResult] = field(default_factory=list)
+    # Fehlgeschlagene Notizen ("pfad: fehler"): eine kaputte Notiz (gesperrtes
+    # Bild, Platte voll) darf den Build der uebrigen nicht abbrechen.
+    errors: list[str] = field(default_factory=list)
 
 
 class _AttachmentStore:
@@ -105,10 +121,19 @@ class _AttachmentStore:
         # Vorhandene Namen einsammeln (Obsidian loest Wikilinks ueber den
         # Dateinamen auf -- der muss deshalb im ganzen Baum eindeutig sein).
         self._by_name: dict[str, Path] = {}
+        # Bereits verschobene Quellpfade -> finaler Name: mehrfach
+        # referenzierte Bilder (gleiches Logo in mehreren Notizen/mehrfach in
+        # einer Notiz) duerfen nach dem ersten Move nicht zu toten Links
+        # werden.
+        self._moved_sources: dict[Path, str] = {}
         if attachments_root.is_dir():
             for p in attachments_root.rglob("*"):
                 if p.is_file():
                     self._by_name.setdefault(p.name, p)
+
+    def moved_name(self, source: Path) -> Optional[str]:
+        """Finaler Name, falls ``source`` in diesem Lauf schon verschoben wurde."""
+        return self._moved_sources.get(source)
 
     def add(self, image: Path, note_slug: str) -> tuple[str, bool]:
         """Verschiebt ``image`` nach ``<root>/<note_slug>/`` und liefert
@@ -122,8 +147,12 @@ class _AttachmentStore:
         renamed = False
         existing = self._by_name.get(name)
         if existing is not None and existing.exists():
-            if short_hash(existing) == short_hash(image):
+            # Dedup nur bei nachweislich identischem Inhalt: voller SHA-256,
+            # nicht der 32-Bit-Kurzvergleich -- eine Kollision wuerde sonst
+            # ein inhaltlich anderes Bild loeschen.
+            if short_hash(existing, 64) == short_hash(image, 64):
                 image.unlink()          # identischer Inhalt -> deduplizieren
+                self._moved_sources[image] = existing.name
                 return existing.name, False
             name = f"{image.stem}-{short_hash(image)}{image.suffix}"
             renamed = True
@@ -131,20 +160,31 @@ class _AttachmentStore:
         target = dest_dir / name
         shutil.move(str(image), str(target))
         self._by_name[name] = target
+        self._moved_sources[image] = name
         return name, renamed
 
 
-def _resolve_image(md_path: Path, raw_target: str) -> Optional[Path]:
-    """Loest ein Markdown-Bildziel relativ zur Notiz auf (None = nicht lokal)."""
+def _resolve_image_path(md_path: Path, raw_target: str) -> Optional[Path]:
+    """Loest ein Markdown-Bildziel relativ zur Notiz auf (ohne Existenzcheck)."""
     if raw_target.startswith(("http://", "https://", "data:")):
         return None
     target = urllib.parse.unquote(raw_target)
     path = Path(target)
     if not path.is_absolute():
         path = (md_path.parent / path).resolve()
-    if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+    if path.suffix.lower() not in IMAGE_EXTENSIONS:
         return None
     return path
+
+
+def _within_roots(path: Path, roots: tuple[Path, ...]) -> bool:
+    """True, wenn ``path`` unterhalb einer der erlaubten Wurzeln liegt.
+
+    Der Build VERSCHIEBT Bilder -- absolute oder ``../``-Referenzen aus
+    fremden .md-Dateien duerfen keine Dateien ausserhalb von Output-Ordner
+    und Vault aus ihrem Ursprungsort ziehen (Datenverlust am Quellort).
+    """
+    return any(path.is_relative_to(r) for r in roots)
 
 
 def _unique_note_path(
@@ -167,6 +207,7 @@ def build_note(
     inbox: Path,
     store: _AttachmentStore,
     taken_names: set[str],
+    allowed_roots: tuple[Path, ...] = (),
 ) -> BuildResult:
     """Verarbeitet eine einzelne Notiz: Frontmatter, Bilder, Inbox-Ablage."""
     post = frontmatter.load(md_path)
@@ -198,9 +239,18 @@ def build_note(
 
     def _rewrite(match: re.Match) -> str:
         nonlocal moved, renamed_images
-        image = _resolve_image(md_path, match.group(2))
+        raw_target = match.group(2) or match.group(3)
+        image = _resolve_image_path(md_path, raw_target)
         if image is None:
-            return match.group(0)       # Web-URL/fehlende Datei: unangetastet
+            return match.group(0)       # Web-URL/kein Bildziel: unangetastet
+        known = store.moved_name(image)
+        if known is not None:
+            # Bereits in diesem Lauf verschoben (Mehrfachreferenz).
+            return f"![[{known}]]"
+        if not image.is_file():
+            return match.group(0)       # fehlende Datei: unangetastet
+        if allowed_roots and not _within_roots(image, allowed_roots):
+            return match.group(0)       # ausserhalb von Output/Vault: nie moven
         asset_dirs.add(image.parent)
         final_name, was_renamed = store.add(image, note_slug)
         moved += 1
@@ -259,8 +309,14 @@ def build_vault(
     store = _AttachmentStore(attachments)
     taken: set[str] = set()
     summary = BuildSummary()
+    allowed_roots = (out_root.resolve(), vault.resolve())
     for md_path in md_files:
-        result = build_note(md_path, inbox, store, taken)
+        try:
+            result = build_note(md_path, inbox, store, taken,
+                                allowed_roots=allowed_roots)
+        except Exception as exc:  # noqa: BLE001 -- uebrige Notizen weiterbauen
+            summary.errors.append(f"{md_path}: {type(exc).__name__}: {exc}")
+            continue
         summary.notes += 1
         summary.images += result.images_moved
         summary.note_collisions += int(result.note_renamed)
@@ -302,6 +358,11 @@ def _run_cli(argv: Optional[list[str]] = None) -> int:
     if summary.note_collisions or summary.image_collisions:
         print(f"  Kollisionen aufgeloest: {summary.note_collisions} Notiz(en), "
               f"{summary.image_collisions} Bild(er) (Hash-Suffix).")
+    if summary.errors:
+        print(f"  WARNUNG: {len(summary.errors)} Notiz(en) fehlgeschlagen:",
+              file=sys.stderr)
+        for line in summary.errors[:10]:
+            print(f"    {line}", file=sys.stderr)
     if summary.notes == 0:
         print("  Hinweis: keine .md-Dateien gefunden (bereits gebaut?).")
 
