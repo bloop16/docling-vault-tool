@@ -4,11 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc2vault"
-version = "0.6.3"
-description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in strukturierte Markdown-Vaults mit Docling"
+version = "1.0.0"
+description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in fertige, durchsuchbare Obsidian-Vaults mit Docling"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
+authors = [{ name = "bloop16" }]
+keywords = [
+    "docling", "obsidian", "markdown", "pdf", "ocr",
+    "knowledge-base", "document-conversion", "vault",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Natural Language :: German",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
 dependencies = [
     "docling>=2.0",
     "streamlit>=1.48",
@@ -24,6 +44,12 @@ watch = ["watchdog>=4"]
 embed = ["numpy>=1.24"]
 dev = ["pytest>=8", "watchdog>=4", "numpy>=1.24"]
 
+[project.urls]
+Repository = "https://github.com/bloop16/docling-vault-tool"
+Documentation = "https://github.com/bloop16/docling-vault-tool/blob/main/MANUAL.md"
+Changelog = "https://github.com/bloop16/docling-vault-tool/blob/main/CHANGELOG.md"
+Issues = "https://github.com/bloop16/docling-vault-tool/issues"
+
 [project.scripts]
 doc2vault = "docling_worker:main"
 doc2vault-jobs = "job_manager:main"
@@ -36,3 +62,12 @@ py-modules = ["docling_worker", "job_manager", "app_streamlit", "dashboard_launc
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 nur fuer echte Ausreisser; deutsche Fehlertexte duerfen lang sein.
+ignore = ["E501"]

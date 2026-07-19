@@ -38,11 +38,11 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
 
 import docling_worker as dw
 
@@ -122,9 +122,9 @@ class Job:
     target: str
     config: dict = field(default_factory=dict)
     poll_interval: int = 30          # Sekunden, fuer watch
-    max_workers: Optional[int] = None
+    max_workers: int | None = None
     created_at: str = ""
-    last_run_at: Optional[str] = None
+    last_run_at: str | None = None
     # Nach jedem Lauf mit Neukonvertierungen zusaetzlich Vault-Build
     # (Inbox/, Attachments/, Wikilinks) + Such-Index ausfuehren.
     build_vault: bool = False
@@ -176,10 +176,10 @@ class JobRunSummary:
     dry_run: bool = False
     skipped_locked: bool = False
     # Ergebnis des optionalen Vault-Build-/Index-Schritts (job.build_vault):
-    build_notes: Optional[int] = None
-    build_images: Optional[int] = None
-    index_total: Optional[int] = None
-    build_error: Optional[str] = None
+    build_notes: int | None = None
+    build_images: int | None = None
+    index_total: int | None = None
+    build_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +252,7 @@ def _jobs_write_lock(timeout: float = 10.0):
             lock.unlink(missing_ok=True)
 
 
-def get_job(job_ref: str) -> Optional[Job]:
+def get_job(job_ref: str) -> Job | None:
     """Findet einen Job per ID oder (eindeutigem) Namen."""
     jobs = load_jobs()
     for j in jobs:
@@ -274,9 +274,9 @@ def add_job(
     name: str,
     source: str,
     target: str,
-    config: Optional[dw.ConverterConfig] = None,
+    config: dw.ConverterConfig | None = None,
     poll_interval: int = 30,
-    max_workers: Optional[int] = None,
+    max_workers: int | None = None,
     build_vault: bool = False,
 ) -> Job:
     """Legt einen Job an. Ist keine Config angegeben, wird sie aus dem Ziel
@@ -314,11 +314,11 @@ def add_job(
 
 def update_job(
     job_ref: str,
-    config_updates: Optional[dict] = None,
-    poll_interval: Optional[int] = None,
-    max_workers: Optional[int] = None,
-    build_vault: Optional[bool] = None,
-) -> Optional[Job]:
+    config_updates: dict | None = None,
+    poll_interval: int | None = None,
+    max_workers: int | None = None,
+    build_vault: bool | None = None,
+) -> Job | None:
     """Aendert Einstellungen eines bestehenden Jobs in-place.
 
     Wichtig gegenueber rm + add: Manifest und Historie bleiben erhalten --
@@ -447,7 +447,7 @@ def _content_changed(entry: dict, stat: os.stat_result, path: Path) -> bool:
     return True
 
 
-def scan_changes(job: Job, manifest: Optional[dict] = None) -> ChangeSet:
+def scan_changes(job: Job, manifest: dict | None = None) -> ChangeSet:
     """Vergleicht den Quellordner mit dem Manifest (schnell via Groesse/mtime,
     Hash nur bei Verdacht)."""
     if manifest is None:
@@ -527,9 +527,9 @@ def _acquire_lock(job_id: str, stale_after: float = 6 * 3600) -> Path:
 def _default_convert_batch(
     files: list[str],
     job: Job,
-    max_workers: Optional[int],
-    progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]],
-) -> list["dw.ConversionResult"]:
+    max_workers: int | None,
+    progress: Callable[[int, int, dw.ConversionResult], None] | None,
+) -> list[dw.ConversionResult]:
     """Konvertiert eine Dateiliste ueber den absturzsicheren Batch-Runner."""
     config = job.converter_config()
     workers = max_workers or job.max_workers or max(1, (os.cpu_count() or 2) - 1)
@@ -542,9 +542,9 @@ def run_job(
     job: Job,
     dry_run: bool = False,
     force: bool = False,
-    max_workers: Optional[int] = None,
-    progress: Optional[Callable[[int, int, "dw.ConversionResult"], None]] = None,
-    convert_batch: Optional[Callable] = None,
+    max_workers: int | None = None,
+    progress: Callable[[int, int, dw.ConversionResult], None] | None = None,
+    convert_batch: Callable | None = None,
     trigger: str = "manuell",
 ) -> JobRunSummary:
     """Fuehrt einen Job inkrementell aus (oder zeigt bei ``dry_run`` nur den Plan).
@@ -597,7 +597,7 @@ def run_job(
     # kopiert), muessen die Vor-Werte ins Manifest -- der naechste Scan sieht
     # die Datei dann als "geaendert" und konvertiert nach. Mit Nach-Werten
     # gaelte der halbfertige Stand faelschlich als aktuell.
-    pre_stat: dict[str, tuple[Optional[int], Optional[float]]] = {}
+    pre_stat: dict[str, tuple[int | None, float | None]] = {}
     for src in todo:
         try:
             st = Path(src).stat()
@@ -744,11 +744,11 @@ def watchdog_available() -> bool:
 
 def watch_job(
     job: Job,
-    stop: Optional[Callable[[], bool]] = None,
-    on_cycle: Optional[Callable[[JobRunSummary], None]] = None,
-    max_cycles: Optional[int] = None,
+    stop: Callable[[], bool] | None = None,
+    on_cycle: Callable[[JobRunSummary], None] | None = None,
+    max_cycles: int | None = None,
     use_events: bool | str = "auto",
-    convert_batch: Optional[Callable] = None,
+    convert_batch: Callable | None = None,
 ) -> None:
     """Ueberwacht den Quellordner und konvertiert Aenderungen laufend.
 
@@ -850,7 +850,7 @@ def _print_summary(job: Job, s: JobRunSummary) -> None:
               file=sys.stderr)
 
 
-def _run_cli(argv: Optional[list[str]] = None) -> int:
+def _run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Sichere, inkrementelle Docling-Jobs (Ordner & Ordnerueberwachung)."
     )

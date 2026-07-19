@@ -1,3 +1,5 @@
+🇬🇧 [English version](README.en.md)
+
 # doc2vault
 
 **Aus einem Ordner voller Dokumente wird ein fertiger, durchsuchbarer

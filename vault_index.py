@@ -42,14 +42,12 @@ import re
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import frontmatter
-
-from typing import Callable
 
 INDEX_DIR = ".vault-index"
 INDEX_DB = "index.db"
@@ -77,7 +75,7 @@ _STOPWORDS = {
     "wenn", "werden", "wie", "wird", "wurde", "wurden", "zu", "zum", "zur",
     "zwischen",
     # Englisch
-    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as",
+    "a", "about", "after", "all", "an", "and", "any", "are", "as",
     "at", "be", "been", "but", "by", "can", "could", "for", "from", "had",
     "has", "have", "if", "into", "is", "it", "its", "may", "more", "most",
     "not", "of", "on", "or", "other", "our", "should", "such", "than",
@@ -320,7 +318,7 @@ class OllamaClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         timeout: float = 60.0,
         retries: int = 2,
     ) -> None:
@@ -330,7 +328,7 @@ class OllamaClient:
         self.timeout = timeout
         self.retries = retries
 
-    def _request(self, path: str, payload: Optional[dict] = None) -> dict:
+    def _request(self, path: str, payload: dict | None = None) -> dict:
         import urllib.error
         import urllib.request
 
@@ -388,7 +386,7 @@ class OllamaClient:
 
 
 def _resolve_model(
-    client, model: Optional[str], env_var: str, purpose: str
+    client, model: str | None, env_var: str, purpose: str
 ) -> str:
     """Modellnamen aus Flag/ENV aufloesen; sonst verfuegbare Modelle anzeigen.
 
@@ -479,7 +477,7 @@ def embed_vault(
     vault_dir: os.PathLike | str,
     client,
     model: str,
-    progress: Optional[Callable[[int, int, str], None]] = None,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> EmbedSummary:
     """Berechnet Embeddings fuer alle Notiz-Chunks (sequenziell, idempotent).
 
@@ -557,7 +555,7 @@ def similar(
     vault_dir: os.PathLike | str,
     query: str,
     client,
-    model: Optional[str] = None,
+    model: str | None = None,
     top_k: int = 5,
 ) -> list[dict]:
     """Semantische Suche: Cosine-Similarity (numpy) ueber alle Chunk-Embeddings."""
@@ -631,7 +629,7 @@ Inhalt:
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def _parse_tag_response(response: str) -> Optional[tuple[list[str], str]]:
+def _parse_tag_response(response: str) -> tuple[list[str], str] | None:
     """Extrahiert tags/summary aus einer LLM-Antwort (tolerant, None bei Murks)."""
     match = _JSON_BLOCK.search(response)
     if not match:
@@ -665,7 +663,7 @@ def tag_vault(
     model: str,
     write_notes: bool = False,
     max_content_chars: int = 4000,
-    progress: Optional[Callable[[int, int, str], None]] = None,
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> TagSummary:
     """Erzeugt Tags + 1-2-Satz-Summary je Notiz aus dem INHALT (Ollama).
 
@@ -803,7 +801,7 @@ def write_index_md(vault_dir: os.PathLike | str) -> Path:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _run_cli(argv: Optional[list[str]] = None) -> int:
+def _run_cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Such-Index fuer den Vault: SQLite-FTS5-Volltext "
         "(.vault-index/index.db) plus lesbares INDEX.md."
