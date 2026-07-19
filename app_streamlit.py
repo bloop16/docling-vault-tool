@@ -584,6 +584,23 @@ with tab_convert:
             )
             st.session_state["scanned_files"] = [str(f) for f in files]
             st.success(f"{len(files)} unterstützte Datei(en) gefunden.")
+            dup_groups = dw.find_duplicate_files(files)
+            if dup_groups:
+                dup_total = sum(len(p) for p in dup_groups.values())
+                st.caption(
+                    f"{len(dup_groups)} Duplikatgruppe(n) mit {dup_total} "
+                    "inhaltsgleichen Dateien gefunden (per CLI-Flag "
+                    "`--duplicates skip` bzw. Job-Option überspringbar)."
+                )
+            if not do_ocr and any(
+                Path(f).suffix.lower() in dw.IMAGE_INPUT_EXTENSIONS
+                for f in files
+            ):
+                st.warning(
+                    "Bilddateien im Quellordner, aber OCR ist aus – "
+                    "gescannte Bilder ergeben leere Notizen. OCR in der "
+                    "Seitenleiste aktivieren."
+                )
     elif st.session_state.get("scanned_files"):
         st.caption(
             f"Letzter Scan: {len(st.session_state['scanned_files'])} Datei(en)."
@@ -1067,7 +1084,7 @@ with tab_jobs:
             # erhalten, bereits Konvertiertes wird nicht wiederholt.
             # Wichtigster Fall: falsche OCR-Engine im gespeicherten Plan.
             job_cfg = job_fresh.converter_config()
-            with st.expander("OCR-Einstellungen ändern"):
+            with st.expander("Job-Einstellungen ändern"):
                 s_ocr = st.toggle(
                     "OCR aktiv", value=job_cfg.do_ocr, key=f"set_ocr_{j.id}",
                 )
@@ -1082,8 +1099,16 @@ with tab_jobs:
                     "OCR-Sprachen", value=job_cfg.ocr_languages,
                     key=f"set_langs_{j.id}",
                 )
+                s_dedup = st.toggle(
+                    "Inhaltsgleiche neue Dateien überspringen",
+                    value=job_fresh.skip_duplicates,
+                    key=f"set_dedup_{j.id}",
+                    help="Neue Dateien, deren Inhalt (SHA-256) bereits "
+                    "konvertiert wurde, werden übersprungen und im Lauf als "
+                    "„duplikate“ ausgewiesen.",
+                )
                 if st.button("Übernehmen", key=f"set_save_{j.id}"):
-                    jm.update_job(j.id, config_updates={
+                    jm.update_job(j.id, skip_duplicates=s_dedup, config_updates={
                         "do_ocr": s_ocr,
                         "ocr_engine": s_engine,
                         "ocr_languages": s_langs,

@@ -3,10 +3,11 @@
 # doc2vault
 
 **Turn a folder full of documents into a finished, searchable Obsidian
-vault.** doc2vault converts PDF, Word, Excel and PowerPoint files to
-structured Markdown and takes care of everything that usually remains after
-conversion: filing, linking, metadata and a search index — local,
-file-based, no external database.
+vault.** doc2vault converts PDF, Word, Excel and PowerPoint files (plus
+images/scans, HTML, CSV, AsciiDoc, e-mail and EPUB) to structured Markdown
+and takes care of everything that usually remains after conversion: filing,
+linking, metadata and a search index — local, file-based, no external
+database.
 
 ## The pipeline
 

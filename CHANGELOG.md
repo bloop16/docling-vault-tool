@@ -4,6 +4,22 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.1.0] – 2026-07-19
+
+### Added
+- **Neue Eingabeformate**: Bilder (PNG/JPG/JPEG/TIF/TIFF/WebP — mit
+  OCR-Warnung, falls OCR aus), CSV, AsciiDoc (`.adoc`), E-Mail (`.eml`)
+  und EPUB. Bilder laufen durch die PDF-Pipeline, OCR-Einstellungen
+  greifen dort ebenso.
+- **Duplikaterkennung**: inhaltsgleiche Quelldateien (SHA-256 mit
+  Größen-Vorfilter) werden beim Scan gemeldet; `--duplicates skip` (CLI)
+  bzw. die Job-Option „Inhaltsgleiche neue Dateien überspringen"
+  konvertiert je Gruppe nur eine Datei. Job-Läufe weisen Duplikate als
+  eigene Kategorie aus.
+- **Logging-Grundgerüst**: Bibliothekspfade melden über
+  `doc2vault.*`-Logger (z. B. Watch-Zyklus-Warnungen im Dienstlog);
+  CLI-Ausgabe bleibt unverändert.
+
 ## [1.0.0] – 2026-07-19
 
 Erste stabile Version. Der komplette Weg „Dokumentenordner → fertiger,

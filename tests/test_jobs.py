@@ -367,3 +367,34 @@ def test_update_job_keeps_manifest(jobs_home, tmp_path):
         jm.update_job(job.id, config_updates={"gibtsnicht": 1})
     # Unbekannter Job.
     assert jm.update_job("nope", config_updates={"do_ocr": False}) is None
+
+
+def test_scan_changes_skips_duplicates(jobs_home, tmp_path):
+    """skip_duplicates: inhaltsgleiche NEUE Dateien landen in duplicates,
+    nicht im todo -- unveraenderte Dateien (Idempotenz) bleiben unberuehrt."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"inhalt eins")
+    job = jm.add_job("Dup", str(src), str(tmp_path / "vault"))
+    jm.update_job(job.id, skip_duplicates=True)
+    job = jm.get_job(job.id)
+    assert job.skip_duplicates is True
+
+    # Erster Lauf konvertiert a.pdf (Hash landet im Manifest).
+    jm.run_job(job, convert_batch=_fake_batch_factory([]))
+
+    # Kopie mit gleichem Inhalt + echte neue Datei + Kopie der neuen Datei.
+    (src / "a_kopie.pdf").write_bytes(b"inhalt eins")
+    (src / "b.pdf").write_bytes(b"inhalt zwei")
+    (src / "b_kopie.pdf").write_bytes(b"inhalt zwei")
+
+    cs = jm.scan_changes(job)
+    assert sorted(Path(p).name for p in cs.duplicates) == [
+        "a_kopie.pdf", "b_kopie.pdf"
+    ]
+    assert [Path(p).name for p in cs.new] == ["b.pdf"]
+    assert cs.counts()["duplikate"] == 2
+    # Ohne skip_duplicates: alles normal neu.
+    jm.update_job(job.id, skip_duplicates=False)
+    cs2 = jm.scan_changes(jm.get_job(job.id))
+    assert len(cs2.new) == 3 and not cs2.duplicates

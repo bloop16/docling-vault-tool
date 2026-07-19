@@ -43,7 +43,62 @@ SUPPORTED_EXTENSIONS = {
     ".html",
     ".htm",
     ".md",
+    # Bilder: laufen durch die PDF-Pipeline (OCR-Einstellungen greifen).
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".webp",
+    # Weitere Docling-Formate (Basisunterstuetzung).
+    ".csv",
+    ".adoc",
+    ".asciidoc",
+    ".eml",
+    ".epub",
 }
+
+# Teilmenge: Bildformate (fuer die OCR-Warnung im Integrationsplan).
+IMAGE_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+
+
+def hash_file(path: os.PathLike | str, chunk: int = 1 << 20) -> str:
+    """SHA-256 ueber den Dateiinhalt (gestreamt)."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def find_duplicate_files(
+    files: Iterable[os.PathLike | str],
+) -> dict[str, list[Path]]:
+    """Gruppen inhaltsgleicher Dateien: ``{sha256: [pfade...]}``.
+
+    Nur Gruppen mit >= 2 Dateien werden geliefert. Billig gehalten:
+    zunaechst nach Dateigroesse vorgruppiert, gehasht werden nur Dateien,
+    deren Groesse mehrfach vorkommt.
+    """
+    by_size: dict[int, list[Path]] = {}
+    for f in files:
+        p = Path(f)
+        try:
+            by_size.setdefault(p.stat().st_size, []).append(p)
+        except OSError:
+            continue
+    groups: dict[str, list[Path]] = {}
+    for candidates in by_size.values():
+        if len(candidates) < 2:
+            continue
+        for p in candidates:
+            try:
+                groups.setdefault(hash_file(p), []).append(p)
+            except OSError:
+                continue
+    return {h: paths for h, paths in groups.items() if len(paths) >= 2}
 
 
 @dataclass
@@ -328,9 +383,14 @@ def build_converter(
 
         pdf_option_kwargs["backend"] = PyPdfiumDocumentBackend
 
+    # Bilder (PNG/JPG/TIFF/...) routet Docling durch die PDF-Pipeline --
+    # nur mit expliziter Option greifen OCR-/Bild-Einstellungen auch dort.
+    from docling.document_converter import ImageFormatOption
+
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(**pdf_option_kwargs),
+            InputFormat.IMAGE: ImageFormatOption(pipeline_options=pipeline_options),
         }
     )
 
@@ -1408,6 +1468,14 @@ def _run_cli(argv: list[str] | None = None) -> int:
         "FTS5-Index trotzdem vollstaendig durch.",
     )
     parser.add_argument(
+        "--duplicates",
+        choices=["convert", "skip"],
+        default="convert",
+        help="Umgang mit inhaltsgleichen Quelldateien: convert = alle "
+        "konvertieren und nur melden (Default), skip = je Gruppe nur die "
+        "erste Datei konvertieren",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -1469,6 +1537,19 @@ def _run_cli(argv: list[str] | None = None) -> int:
         print(f"Keine unterstuetzten Dateien in {input_root} gefunden.")
         return 0
 
+    # Duplikate (inhaltsgleiche Dateien) erkennen -- nicht zu verwechseln mit
+    # der Idempotenz (unveraenderte Datei beim Wiederholungslauf).
+    duplicate_groups = find_duplicate_files(files)
+    skipped_duplicates: list[Path] = []
+    if duplicate_groups and args.duplicates == "skip":
+        for paths in duplicate_groups.values():
+            # Deterministisch die erste (sortierte) Datei behalten.
+            keep, *rest = sorted(paths)
+            skipped_duplicates.extend(rest)
+        skip_set = {str(p) for p in skipped_duplicates}
+        files = [f for f in files if str(f) not in skip_set]
+        total = len(files)
+
     # Plan EINMAL fuer den gesamten Batch anzeigen und bestaetigen lassen.
     print("\n=== Zielordner-Analyse ===")
     for obs in profile.observations:
@@ -1477,6 +1558,21 @@ def _run_cli(argv: list[str] | None = None) -> int:
     for line in describe_plan(profile, config):
         print(f"  {line}")
     print(f"  Zu konvertieren: {total} Datei(en)")
+    if duplicate_groups:
+        dup_files = sum(len(p) for p in duplicate_groups.values())
+        if args.duplicates == "skip":
+            print(f"  Duplikate: {len(duplicate_groups)} Gruppe(n), "
+                  f"{len(skipped_duplicates)} inhaltsgleiche Datei(en) "
+                  "werden uebersprungen (--duplicates skip).")
+        else:
+            print(f"  Duplikate: {len(duplicate_groups)} Gruppe(n) mit "
+                  f"{dup_files} inhaltsgleichen Dateien gefunden -- alle "
+                  "werden konvertiert (--duplicates skip zum Ueberspringen).")
+    if not config.do_ocr and any(
+        Path(f).suffix.lower() in IMAGE_INPUT_EXTENSIONS for f in files
+    ):
+        print("  WARNUNG: Bilddateien im Batch, aber OCR ist aus -- "
+              "gescannte Bilder ergeben leere Notizen (--ocr aktivieren).")
     if args.build_vault:
         print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
               "Wikilinks + Frontmatter")

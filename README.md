@@ -4,7 +4,8 @@
 
 **Aus einem Ordner voller Dokumente wird ein fertiger, durchsuchbarer
 Obsidian-Vault.** doc2vault konvertiert PDF-, Word-, Excel- und
-PowerPoint-Dateien in strukturiertes Markdown und übernimmt alles, was danach
+PowerPoint-Dateien (dazu Bilder/Scans, HTML, CSV, AsciiDoc, E-Mail und
+EPUB) in strukturiertes Markdown und übernimmt alles, was danach
 noch fehlt: Ablage, Verlinkung, Metadaten und einen Such-Index — lokal,
 dateibasiert, ohne externe Datenbank.
 
@@ -67,6 +68,14 @@ an (oder `doc2vault-jobs add … --build-vault` + `watch`).
 
 Alle Funktionen, CLI-Referenz, Docker-/Server-Betrieb, Ollama-Anbindung und
 Betriebsdetails: **[MANUAL.md](MANUAL.md)**
+
+## Roadmap
+
+Geplant nach 1.x (Reihenfolge offen): REST-API für Automatisierung,
+Ablage-Regeln je Job (Muster → Zielordner/Tags), LLM-/VLM-gestützte
+OCR-Nachkorrektur über die vorhandene Ollama-Anbindung, optionale
+Dashboard-Authentifizierung, englische Oberfläche sowie ein
+Curator-Agent, der Inbox-Notizen in die Vault-Struktur einsortiert.
 
 ## Lizenz
 

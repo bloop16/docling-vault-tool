@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "doc2vault"
-version = "1.0.0"
+version = "1.1.0"
 description = "Batch-Konvertierung von Dokumenten (PDF/DOCX/XLSX/PPTX) in fertige, durchsuchbare Obsidian-Vaults mit Docling"
 readme = "README.md"
 requires-python = ">=3.10"
