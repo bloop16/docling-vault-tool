@@ -286,10 +286,24 @@ Build-Fehler brechen den Lauf nicht ab und stehen im Verlauf.
 nur als Sicherheits-Rescan, `--events` erzwingt) oder Polling (`--poll`,
 empfohlen für Netzlaufwerke).
 
-**Dauerbetrieb:** Vorlagen unter `deploy/` — systemd-Template
-(`systemctl enable --now doc2vault-watch@<job-id>`) und Windows-Aufgabe
-(`deploy/windows/register_watch_task.ps1 -JobId <job-id>`); alternativ der
-`watch`-Service im Docker-Compose.
+**Dauerbetrieb als Dienst:** `doc2vault-service` richtet Dashboard und
+Überwachung so ein, dass sie **ohne offenes Terminal** weiterlaufen:
+
+```bash
+doc2vault-service install ui --port 8501   # Dashboard als Hintergrunddienst
+doc2vault-service install watch <job-id>   # Ordnerüberwachung als Dienst
+doc2vault-service status                   # Übersicht
+doc2vault-service uninstall ui             # wieder entfernen
+```
+
+Unter **Linux** entstehen systemd-Benutzerdienste (kein Root nötig,
+automatischer Neustart bei Fehlern); damit sie auch ohne aktive Anmeldung
+laufen: `loginctl enable-linger $USER`. Unter **Windows** entstehen
+Aufgaben der Aufgabenplanung (Start bei Anmeldung, sofortiger Erststart) —
+das Terminal kann direkt danach geschlossen werden. Alternativen:
+systemweite Vorlage `deploy/systemd/doc2vault-watch@.service`,
+`deploy/windows/register_watch_task.ps1` oder der `watch`-Service im
+Docker-Compose.
 
 **Lauf-Historie:** Zeitpunkt, Auslöser (`cli`/`dashboard`/`watch`), Zahlen,
 Fehler samt Grund, Build-Ergebnis, Dauer — je Job die letzten 200 Läufe.
@@ -375,6 +389,12 @@ bleibt erhalten), `list`, `plan <job>`, `run <job>`,
 `history <job> [-n N]`, `watch <job> [-n Sek] [--events|--poll]`,
 `show <job>`, `rm <job>`.
 
+### `doc2vault-service`
+
+`install ui [--port]` / `install watch <job>` (Dienst anlegen + starten),
+`uninstall ui|watch <job>`, `status`. Linux: systemd-Benutzerdienste;
+Windows: Aufgabenplanung — Details in Kapitel 8.
+
 ## 12. Umgebungsvariablen
 
 | Variable | Zweck | Default |
@@ -425,6 +445,15 @@ oder Tesseract installieren (Windows: UB-Mannheim-Installer, Sprache
 einem gespeicherten **Job**, diesen per `doc2vault-jobs set <job>
 --ocr-engine easyocr` bzw. über „OCR-Einstellungen ändern" in der Job-Karte
 umstellen — Manifest und Verlauf bleiben dabei erhalten.
+
+**EasyOCR lädt keine Modelle** (`Downloading detection model …` bricht ab,
+HTTP 403/Timeout): Die EasyOCR-Modelle kommen beim ersten OCR-Lauf von
+GitHub — in Netzen mit blockierten GitHub-Downloads schlägt das fehl.
+Abhilfe: Netzzugang herstellen, die Modelldateien (z. B. `craft_mlt_25k`,
+`latin_g2`) auf einem anderen Rechner laden und manuell nach
+`~/.EasyOCR/model` (Windows: `C:\Users\<name>\.EasyOCR\model`) kopieren —
+oder auf **Tesseract** wechseln, der komplett lokal ohne Downloads
+arbeitet.
 
 **„pdf-parser" / `Inconsistent number of pages: N!=-1` / `Input document is
 not valid`:** Der Standard-PDF-Parser (docling-parse) konnte die Datei nicht

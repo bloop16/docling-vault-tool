@@ -28,9 +28,21 @@ def test_english_lookup_and_fallback():
 
 
 def test_invalid_language_is_ignored():
-    i18n.set_language("fr")            # nicht vorhanden -> bleibt wie es war
+    i18n.set_language("xx")            # nicht vorhanden -> bleibt wie es war
     assert i18n.get_language() == "de"
-    assert set(i18n.LANGUAGES) == {"de", "en"}
+    # ioBroker-uebliche Sprachpalette; Deutsch ist Quell-/Fallback-Sprache.
+    assert {"de", "en", "fr", "es", "it", "nl", "pl", "pt", "ru", "uk",
+            "zh-cn"} <= set(i18n.LANGUAGES)
+
+
+def test_missing_language_file_falls_back(monkeypatch):
+    """Registrierte Sprache ohne (intakte) JSON-Datei -> deutscher Fallback."""
+    monkeypatch.setitem(i18n._cache, "pl", {})
+    i18n.set_language("pl")
+    try:
+        assert i18n.tr("Dateien scannen") == "Dateien scannen"
+    finally:
+        i18n.set_language("de")
 
 
 def test_error_hints_have_translations():
@@ -47,3 +59,14 @@ def test_error_hints_have_translations():
         assert translated >= 5
     finally:
         i18n.set_language("de")
+
+
+def test_language_files_consistent():
+    """Das ioBroker-artige Pruefskript findet keine Inkonsistenzen."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from check_i18n import check
+
+    assert check() == []

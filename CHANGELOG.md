@@ -4,6 +4,42 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.3.0] – 2026-07-19
+
+### Added
+- **11 Oberflächensprachen** (ioBroker-Stil): Übersetzungen liegen als
+  `i18n/<sprache>.json` vor — Deutsch (Quelle), Englisch, Französisch,
+  Spanisch, Italienisch, Niederländisch, Polnisch, Portugiesisch,
+  Russisch, Ukrainisch, Chinesisch (vereinfacht). Konsistenzprüfung per
+  `scripts/check_i18n.py` (läuft als Test in der CI): Vollständigkeit,
+  keine Waisen, Platzhalter-Treue, Schlüssel-Parität aller Sprachen.
+- **Einstellungs-Seite**: alle Verarbeitungs-Optionen (Parallele Prozesse,
+  Bilder/Auflösung, Tabellen, OCR + Engine + Sprachen, Excel-Limits,
+  Umgang mit Originaldateien) sind in einen eigenen Tab „Einstellungen"
+  gezogen; die Seitenleiste bleibt schlank (Sprache + Verzeichnisse).
+  Der Konvertierungs-Tab führt mit einer ①-②-③-Leiste durch den Ablauf.
+- Neue Fehlerkategorie für blockierte EasyOCR-Modell-Downloads mit
+  Hinweis auf manuelle Modell-Installation bzw. Tesseract.
+- **`doc2vault-service`**: Dashboard und Ordnerüberwachung als
+  Hintergrunddienst einrichten — Linux: systemd-Benutzerdienste
+  (Auto-Restart, kein Root), Windows: Aufgabenplanung (Start bei
+  Anmeldung). Das Terminal kann danach geschlossen werden.
+  `install ui|watch <job>`, `uninstall`, `status`.
+
+### Fixed
+- Packaging: das `i18n`-Paket (inkl. Sprachdateien) fehlte in der
+  Wheel-Konfiguration — `pip install doc2vault` hätte das Dashboard ohne
+  Übersetzungsmodul installiert.
+- Übersetzungsbestand bereinigt: 9 veraltete Einträge entfernt, 5 fehlende
+  Fehlerhinweis-Übersetzungen ergänzt (vom Prüfskript gefunden).
+
+### Verifiziert (OCR/Last, real mit Docling)
+- Tesseract und RapidOCR erkennen deutschen Text aus Bild-PDFs (E2E).
+- A0-CAD-Scan (35 MPixel): Riesenseiten-Erkennung → reduzierter Modus →
+  OCR liest Schriftfeld/Zeichnungsnummer; ~28 s, stabiler Speicher.
+- Massenlauf 122 Dateien (78 MB, bis 120 Seiten/21 MB je Datei) ohne
+  Ausfälle.
+
 ## [1.2.0] – 2026-07-19
 
 ### Added

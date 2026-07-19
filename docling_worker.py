@@ -709,6 +709,16 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
         "und mit funktionierendem Netzzugang erneut laden.",
     ),
     (
+        ("downloading detection model", "downloading recognition model",
+         "easyocr"),
+        "ocr-modelle",
+        "Die EasyOCR-Modelle konnten nicht heruntergeladen werden (GitHub "
+        "blockiert oder offline). Entweder Netzzugang herstellen, die "
+        "Modelldateien manuell in den EasyOCR-Modellordner legen "
+        "(~/.EasyOCR/model) oder auf Tesseract wechseln – der arbeitet "
+        "komplett lokal ohne Downloads.",
+    ),
+    (
         ("tesseract is not available", "tesseract_cmd", "tesserocr"),
         "ocr-engine",
         "Die gewählte OCR-Engine Tesseract ist auf diesem Rechner nicht "
