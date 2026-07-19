@@ -62,7 +62,10 @@ doc2vault -i /pfad/zu/dokumenten -o /pfad/zum/vault --build-vault
 ```
 
 Für den Dauerbetrieb legt man im Dashboard einen **Job** mit Ordnerüberwachung
-an (oder `doc2vault-jobs add … --build-vault` + `watch`).
+an (oder `doc2vault-jobs add … --build-vault` + `watch`) — und richtet beides
+per `doc2vault-service install ui` / `install watch <job>` als
+**Hintergrunddienst** ein (Linux: systemd, Windows: Aufgabenplanung), sodass
+das Terminal geschlossen werden kann.
 
 ## Mehr
 

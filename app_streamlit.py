@@ -454,147 +454,11 @@ with st.sidebar:
         "entsprechend eingegliedert.",
     )
 
-    st.markdown(
-        f'<div class="side-label">{_("Verarbeitung")}</div>',
-        unsafe_allow_html=True,
-    )
-    cpu_count = os.cpu_count() or 2
-    max_workers = st.slider(
-        _("Parallele Prozesse"),
-        min_value=1,
-        max_value=cpu_count,
-        value=max(1, cpu_count - 1),
-        help=_("Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren."),
-    )
-
-    st.markdown(
-        f'<div class="side-label">{_("Docling-Funktionen")}</div>',
-        unsafe_allow_html=True,
-    )
-    extract_images = st.toggle(
-        _("Bilder extrahieren"),
-        value=True,
-        help=_(
-            "Eingebettete Grafiken als eigene Dateien ablegen und in den "
-            "Notizen verlinken. Deaktiviert: reine Textkonvertierung."
-        ),
-    )
-    images_scale = 2.0
-    if extract_images:
-        images_scale = st.slider(
-            _("Bildauflösung (Skalierung)"),
-            min_value=1.0,
-            max_value=4.0,
-            value=2.0,
-            step=0.5,
-            help=_(
-                "Höhere Werte liefern schärfere Bilder, brauchen aber mehr "
-                "Zeit und Speicherplatz."
-            ),
-        )
-    table_structure = st.toggle(
-        _("Tabellenstruktur erkennen"),
-        value=True,
-        help=_(
-            "Rekonstruiert Tabellen als Markdown-Tabellen. Deaktiviert ist "
-            "die Verarbeitung schneller, Tabellen werden aber zu Fließtext."
-        ),
-    )
-    do_ocr = st.toggle(
-        _("OCR für gescannte PDFs"),
-        value=False,
-        help=_("Nur für Scans ohne Textebene aktivieren – deutlich langsamer."),
-    )
-    ocr_engine = "easyocr"
-    ocr_languages = "de,en"
-    if do_ocr:
-        ocr_engine = st.selectbox(
-            _("OCR-Engine"),
-            options=["easyocr", "tesseract", "rapidocr"],
-            index=0,
-            help=_(
-                "EasyOCR (Standard): Modelle werden von GitHub geladen. "
-                "Tesseract: erfordert lokale Installation, Sprachcodes wie "
-                "„deu,eng“. RapidOCR: lädt Modelle von modelscope.cn – in "
-                "vielen Netzen blockiert."
-            ),
-        )
-        ocr_languages = st.text_input(
-            _("OCR-Sprachen"),
-            value="deu,eng" if ocr_engine == "tesseract" else "de,en",
-            help=_("Kommaliste der Erkennungssprachen."),
-        )
-        # Sofort warnen statt spaeter 1000+ Einzelfehler produzieren.
-        _engine_warning = dw.check_ocr_engine(dw.ConverterConfig(
-            do_ocr=True, ocr_engine=ocr_engine, ocr_languages=ocr_languages,
-        ))
-        if _engine_warning:
-            st.warning(_(_engine_warning), icon="⚠️")
-
-    st.markdown(
-        f'<div class="side-label">{_("Excel-Arbeitsmappen")}</div>',
-        unsafe_allow_html=True,
-    )
-    xlsx_sheet_limit = st.number_input(
-        _("Sheet-Limit je Arbeitsmappe"),
-        min_value=0,
-        value=0,
-        step=5,
-        help=_(
-            "0 = alle Blätter konvertieren. Ein Limit begrenzt Laufzeit und "
-            "Notizgröße bei Arbeitsmappen mit sehr vielen Blättern."
-        ),
-    )
-    xlsx_on_limit = "limit"
-    if xlsx_sheet_limit > 0:
-        # Optionswerte bleiben deutsch (werden unten gemappt) -- nur die
-        # Anzeige laeuft ueber format_func durch die Uebersetzung.
-        xlsx_on_limit_label = st.radio(
-            _("Bei Überschreitung"),
-            options=["Nur erste Blätter konvertieren", "Datei überspringen"],
-            index=0,
-            format_func=_,
-            help=_(
-                "Übersprungene Dateien erscheinen im Fehlerprotokoll. Bei "
-                "„nur erste Blätter“ vermerkt das Frontmatter die Gesamtzahl."
-            ),
-        )
-        xlsx_on_limit = (
-            "limit" if xlsx_on_limit_label.startswith("Nur") else "skip"
-        )
-
-    st.markdown(
-        f'<div class="side-label">{_("Nach erfolgreicher Konvertierung")}</div>',
-        unsafe_allow_html=True,
-    )
-    on_success_label = st.radio(
-        _("Originaldateien"),
-        options=["Behalten", "In Archiv verschieben", "Löschen"],
-        index=0,
-        format_func=_,
-        help=_(
-            "Betrifft nur erfolgreich konvertierte Dateien. Fehlgeschlagene "
-            "Dateien bleiben immer unangetastet."
-        ),
-    )
-    on_success = {
-        "Behalten": "keep",
-        "In Archiv verschieben": "archive",
-        "Löschen": "delete",
-    }[on_success_label]
-    archive_dir = ""
-    if on_success == "archive":
-        archive_dir = _dir_field(
-            "Archiv-Ordner", "archive_dir", "DOC2VAULT_ARCHIVE_DIR",
-            "/pfad/zum/archiv",
-            "Die Struktur des Quellordners wird im Archiv gespiegelt; der "
-            "Ordner wird bei Bedarf angelegt.",
-        )
-        st.session_state["archive_dir"] = archive_dir
-    elif on_success == "delete":
-        st.warning(_("Originale werden nach Erfolg unwiderruflich gelöscht."))
-
     st.divider()
+    st.caption(_(
+        "Alle Verarbeitungs-Optionen (OCR, Bilder, Excel, Originaldateien) "
+        "stehen im Tab „Einstellungen“."
+    ))
     st.caption(_(
         "Unterstützte Formate: {formats}",
         formats=", ".join(sorted(e.lstrip(".") for e in dw.SUPPORTED_EXTENSIONS)),
@@ -607,15 +471,184 @@ st.session_state["output_dir"] = output_dir
 profile = None
 config: dw.ConverterConfig | None = None
 
-tab_convert, tab_jobs, tab_search, tab_transfer = st.tabs(
+tab_convert, tab_jobs, tab_search, tab_transfer, tab_settings = st.tabs(
     [_("Konvertierung"), _("Jobs & Überwachung"), _("Suche & KI"),
-     _("Datenaustausch")]
+     _("Datenaustausch"), _("Einstellungen")]
 )
+
+# ===========================================================================
+# Tab 5: Einstellungen -- IM CODE ZUERST befuellt, damit die Werte in allen
+# anderen Tabs bereitstehen (die visuelle Tab-Reihenfolge ist davon
+# unabhaengig). Widget-Keys machen die Auswahl ueber Reruns hinweg stabil.
+# ===========================================================================
+with tab_settings:
+    st.caption(_(
+        "Gilt für Konvertierungen und neue Jobs. Auswahl bleibt während der "
+        "Sitzung erhalten."
+    ))
+    col_left, col_right = st.columns(2, gap="large")
+
+    with col_left:
+        _overline(_("Verarbeitung"))
+        cpu_count = os.cpu_count() or 2
+        max_workers = st.slider(
+            _("Parallele Prozesse"),
+            min_value=1,
+            max_value=cpu_count,
+            value=max(1, cpu_count - 1),
+            key="set_workers",
+            help=_("Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren."),
+        )
+
+        _overline(_("Docling-Funktionen"))
+        extract_images = st.toggle(
+            _("Bilder extrahieren"),
+            value=True,
+            key="set_images",
+            help=_(
+                "Eingebettete Grafiken als eigene Dateien ablegen und in den "
+                "Notizen verlinken. Deaktiviert: reine Textkonvertierung."
+            ),
+        )
+        images_scale = 2.0
+        if extract_images:
+            images_scale = st.slider(
+                _("Bildauflösung (Skalierung)"),
+                min_value=1.0,
+                max_value=4.0,
+                value=2.0,
+                step=0.5,
+                key="set_scale",
+                help=_(
+                    "Höhere Werte liefern schärfere Bilder, brauchen aber mehr "
+                    "Zeit und Speicherplatz."
+                ),
+            )
+        table_structure = st.toggle(
+            _("Tabellenstruktur erkennen"),
+            value=True,
+            key="set_tables",
+            help=_(
+                "Rekonstruiert Tabellen als Markdown-Tabellen. Deaktiviert ist "
+                "die Verarbeitung schneller, Tabellen werden aber zu Fließtext."
+            ),
+        )
+        do_ocr = st.toggle(
+            _("OCR für gescannte PDFs"),
+            value=False,
+            key="set_ocr",
+            help=_("Nur für Scans ohne Textebene aktivieren – deutlich langsamer."),
+        )
+        ocr_engine = "easyocr"
+        ocr_languages = "de,en"
+        if do_ocr:
+            ocr_engine = st.selectbox(
+                _("OCR-Engine"),
+                options=["easyocr", "tesseract", "rapidocr"],
+                index=0,
+                key="set_engine",
+                help=_(
+                    "EasyOCR (Standard): Modelle werden von GitHub geladen. "
+                    "Tesseract: erfordert lokale Installation, Sprachcodes wie "
+                    "„deu,eng“. RapidOCR: lädt Modelle von modelscope.cn – in "
+                    "vielen Netzen blockiert."
+                ),
+            )
+            ocr_languages = st.text_input(
+                _("OCR-Sprachen"),
+                value="deu,eng" if ocr_engine == "tesseract" else "de,en",
+                key="set_langs",
+                help=_("Kommaliste der Erkennungssprachen."),
+            )
+            # Sofort warnen statt spaeter 1000+ Einzelfehler produzieren.
+            _engine_warning = dw.check_ocr_engine(dw.ConverterConfig(
+                do_ocr=True, ocr_engine=ocr_engine, ocr_languages=ocr_languages,
+            ))
+            if _engine_warning:
+                st.warning(_(_engine_warning), icon="⚠️")
+
+    with col_right:
+        _overline(_("Excel-Arbeitsmappen"))
+        xlsx_sheet_limit = st.number_input(
+            _("Sheet-Limit je Arbeitsmappe"),
+            min_value=0,
+            value=0,
+            step=5,
+            key="set_xlsx_limit",
+            help=_(
+                "0 = alle Blätter konvertieren. Ein Limit begrenzt Laufzeit und "
+                "Notizgröße bei Arbeitsmappen mit sehr vielen Blättern."
+            ),
+        )
+        xlsx_on_limit = "limit"
+        if xlsx_sheet_limit > 0:
+            # Optionswerte bleiben deutsch (werden unten gemappt) -- nur die
+            # Anzeige laeuft ueber format_func durch die Uebersetzung.
+            xlsx_on_limit_label = st.radio(
+                _("Bei Überschreitung"),
+                options=["Nur erste Blätter konvertieren", "Datei überspringen"],
+                index=0,
+                format_func=_,
+                key="set_xlsx_mode",
+                help=_(
+                    "Übersprungene Dateien erscheinen im Fehlerprotokoll. Bei "
+                    "„nur erste Blätter“ vermerkt das Frontmatter die Gesamtzahl."
+                ),
+            )
+            xlsx_on_limit = (
+                "limit" if xlsx_on_limit_label.startswith("Nur") else "skip"
+            )
+
+        _overline(_("Nach erfolgreicher Konvertierung"))
+        on_success_label = st.radio(
+            _("Originaldateien"),
+            options=["Behalten", "In Archiv verschieben", "Löschen"],
+            index=0,
+            format_func=_,
+            key="set_on_success",
+            help=_(
+                "Betrifft nur erfolgreich konvertierte Dateien. Fehlgeschlagene "
+                "Dateien bleiben immer unangetastet."
+            ),
+        )
+        on_success = {
+            "Behalten": "keep",
+            "In Archiv verschieben": "archive",
+            "Löschen": "delete",
+        }[on_success_label]
+        archive_dir = ""
+        if on_success == "archive":
+            archive_dir = _dir_field(
+                "Archiv-Ordner", "archive_dir", "DOC2VAULT_ARCHIVE_DIR",
+                "/pfad/zum/archiv",
+                "Die Struktur des Quellordners wird im Archiv gespiegelt; der "
+                "Ordner wird bei Bedarf angelegt.",
+            )
+            st.session_state["archive_dir"] = archive_dir
+        elif on_success == "delete":
+            st.warning(_("Originale werden nach Erfolg unwiderruflich gelöscht."))
+
+        _overline(_("Sprache"))
+        st.caption(_(
+            "Die Oberflächensprache wird oben in der Seitenleiste gewählt; "
+            "Vorbelegung über DOC2VAULT_LANG."
+        ))
 
 # ===========================================================================
 # Tab 1: Konvertierung
 # ===========================================================================
 with tab_convert:
+    st.caption(_(
+        "① Quell- und Ziel-Ordner in der Seitenleiste wählen · "
+        "② „Dateien scannen“ zeigt, was gefunden wird · "
+        "③ „Ziel analysieren“, Plan prüfen und einmal für den ganzen "
+        "Batch bestätigen. Verarbeitungs-Optionen: Tab „Einstellungen“."
+    ))
+    if not input_dir or not output_dir:
+        st.info(_(
+            "Zum Start: Quell- und Ziel-Vault-Ordner in der Seitenleiste "
+            "angeben (oder per „Durchsuchen…“ auswählen)."
+        ))
     col_scan, col_analyze = st.columns(2)
     scan = col_scan.button(_("Dateien scannen"), width="stretch")
     analyze = col_analyze.button(

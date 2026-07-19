@@ -46,6 +46,10 @@ doc2vault-ui               # start the dashboard
 docker compose up -d       # or as a container: http://<server-ip>:8501
 ```
 
+For unattended operation, `doc2vault-service install ui` / `install watch
+<job>` sets both up as a **background service** (Linux: systemd user units,
+Windows: Task Scheduler) — the terminal can be closed afterwards.
+
 One-liner without the dashboard:
 
 ```bash
