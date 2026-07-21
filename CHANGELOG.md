@@ -4,6 +4,15 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.6.0] – 2026-07-21
+
+### Added
+- **„Vault im Quellordner anlegen"** (Checkbox unter dem Quellordner):
+  alles in einem Ordner — der Vault entsteht als Unterordner der Quelle
+  (Name wählbar, Standard „Vault") und zieht bei einem Umzug automatisch
+  mit. Keine Schleife: erzeugte Notizen werden beim Scan ausgeschlossen
+  (bestehender Selbstausschluss des Zielordners).
+
 ## [1.5.0] – 2026-07-21
 
 ### Added
