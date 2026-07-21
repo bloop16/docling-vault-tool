@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -907,6 +908,91 @@ def read_worker_status(output_dir: os.PathLike | str) -> list[dict]:
     return entries
 
 
+def plan_note_path(
+    source: Path,
+    out_root: Path,
+    input_root: os.PathLike | str | None,
+    config: ConverterConfig,
+) -> tuple[Path, Path]:
+    """Deterministischer Zielpfad einer Notiz: ``(rel, md_path)``.
+
+    Von Konvertierung UND Fortsetzungs-Filter gemeinsam genutzt, damit
+    beide exakt dieselbe Ablage berechnen.
+    """
+    try:
+        rel = source.relative_to(input_root) if input_root else Path(source.name)
+    except ValueError:
+        rel = Path(source.name)   # Quelle nicht unter input_root -> flach
+
+    # Report.pdf + Report.docx im selben Ordner wuerden beide auf Report.md
+    # abgebildet und sich still ueberschreiben -- bei Kollision die Endung
+    # in den Namen aufnehmen (deterministisch ueber parallele Worker).
+    if _stem_collides(source):
+        tag = source.suffix.lstrip(".").lower()
+        rel = rel.with_name(f"{rel.stem} ({tag}){rel.suffix}")
+
+    note_rel = rel if config.mirror_structure else Path(rel.name)
+    notes_base = out_root / config.notes_subdir if config.notes_subdir else out_root
+    return rel, notes_base / note_rel.with_suffix(".md")
+
+
+def filter_already_converted(
+    files: list,
+    output_dir: os.PathLike | str,
+    input_root: os.PathLike | str | None,
+    config: ConverterConfig,
+) -> tuple[list, list]:
+    """Fortsetzung nach Abbruch: ``(zu konvertieren, uebersprungen)``.
+
+    Eine Datei gilt als erledigt, wenn ihre Notiz existiert und mindestens
+    so neu ist wie die Quelle -- die .md wird erst nach vollstaendig
+    erfolgreicher Konvertierung geschrieben, ein harter Stopp (Absturz,
+    Prozess gekillt) hinterlaesst also keine halben Notizen. Damit setzt
+    ein erneuter Lauf mit gleicher Quelle/gleichem Ziel genau dort fort,
+    wo gestoppt wurde.
+    """
+    todo: list = []
+    skipped: list = []
+    out_root = Path(output_dir)
+    for f in files:
+        src = Path(f)
+        try:
+            _, md_path = plan_note_path(src, out_root, input_root, config)
+            if md_path.is_file() and md_path.stat().st_mtime >= src.stat().st_mtime:
+                skipped.append(f)
+                continue
+        except OSError:
+            pass
+        todo.append(f)
+    return todo, skipped
+
+
+def _relativize_asset_links(body: str, abs_variants: set[str], rel_prefix: str) -> str:
+    """Absolute Bild-Links auf notiz-relative Links umschreiben.
+
+    Docling schreibt bei zentraler Ablage absolute Pfade -- auf Windows mit
+    Backslashes. Relative Links ueberleben das Verschieben des Vaults;
+    Separatoren werden auf ``/`` normalisiert (Markdown-Standard).
+    """
+    norm_variants = {v.replace("\\", "/").rstrip("/") for v in abs_variants}
+
+    def _fix(match: re.Match) -> str:
+        target = match.group(2) or match.group(3) or ""
+        norm = target.replace("\\", "/")
+        for variant in norm_variants:
+            if norm.startswith(variant):
+                return f"![{match.group(1)}]({rel_prefix}{norm[len(variant):]})"
+        return match.group(0)
+
+    return _MD_IMAGE_REF.sub(_fix, body)
+
+
+# Markdown-Bildreferenz: ![alt](ziel) bzw. ![alt](<ziel mit leerzeichen>).
+_MD_IMAGE_REF = re.compile(
+    r"!\[([^\]]*)\]\((?:<([^>]+)>|([^)\s]+))(?:\s+\"[^\"]*\")?\)"
+)
+
+
 def _stem_collides(source: Path) -> bool:
     """True, wenn im selben Ordner eine WEITERE unterstuetzte Datei mit
     gleichem Stamm liegt (z. B. Word-Datei + daraus exportiertes PDF)."""
@@ -995,25 +1081,7 @@ def convert_single_file(
     source = Path(source_path)
     out_root = Path(output_dir)
 
-    try:
-        rel = source.relative_to(input_root) if input_root else Path(source.name)
-    except ValueError:
-        # Quelle liegt nicht unter input_root -> flach ablegen.
-        rel = Path(source.name)
-
-    # Report.pdf + Report.docx im selben Ordner wuerden beide auf Report.md
-    # (und denselben Asset-Ordner) abgebildet und sich still ueberschreiben --
-    # bei Kollision die Endung in den Namen aufnehmen (deterministisch, auch
-    # ueber parallele Worker hinweg).
-    if _stem_collides(source):
-        tag = source.suffix.lstrip(".").lower()
-        rel = rel.with_name(f"{rel.stem} ({tag}){rel.suffix}")
-
-    # Notiz-Ablage: optional in einen Unterordner (Vault-Einordnung) und
-    # optional mit gespiegelter Quellstruktur.
-    note_rel = rel if config.mirror_structure else Path(rel.name)
-    notes_base = out_root / config.notes_subdir if config.notes_subdir else out_root
-    md_path = notes_base / note_rel.with_suffix(".md")
+    rel, md_path = plan_note_path(source, out_root, input_root, config)
 
     # Anhang-Ablage: zentral (ein Ordner nach Vault-Konvention) oder neben der
     # Notiz (per-Notiz-Ordner). _asset_key vermeidet Namenskollisionen.
@@ -1108,18 +1176,31 @@ def convert_single_file(
         # Ablage + verschachtelte Notiz). Fuer Obsidian muessen die Links
         # relativ zur Notiz sein.
         if num_images:
-            abs_prefix = assets_dir.absolute().as_posix()
-            if abs_prefix in body:
-                rel_prefix = Path(
-                    os.path.relpath(assets_dir, md_path.parent)
-                ).as_posix()
-                body = body.replace(abs_prefix, rel_prefix)
+            rel_prefix = Path(
+                os.path.relpath(assets_dir, md_path.parent)
+            ).as_posix()
+            body = _relativize_asset_links(
+                body,
+                {assets_dir.absolute().as_posix(), str(assets_dir.absolute())},
+                rel_prefix,
+            )
 
         if config.add_frontmatter:
+            # original_path RELATIV zur Quelle (posix): bleibt gueltig, wenn
+            # Quell- oder Vault-Ordner spaeter verschoben werden oder auf
+            # einem anderen System (anderes Laufwerk/Mount) liegen. Der
+            # absolute Pfad steht zusaetzlich in original_path_abs -- fuer
+            # Direktzugriff auf DIESEM System.
+            try:
+                orig_rel = source.relative_to(input_root).as_posix() \
+                    if input_root else source.name
+            except ValueError:
+                orig_rel = source.name
             body = _yaml_frontmatter(
                 {
                     "source": source.name,
-                    "original_path": str(source.resolve()),
+                    "original_path": orig_rel,
+                    "original_path_abs": str(source.resolve()),
                     "assets_folder": assets_rel,
                     "converted_at": datetime.now(timezone.utc)
                     .isoformat(timespec="seconds"),
@@ -1512,8 +1593,9 @@ def _run_cli(argv: list[str] | None = None) -> int:
         "--workers",
         "-w",
         type=int,
-        default=max(1, (os.cpu_count() or 2) - 1),
-        help="Anzahl paralleler Prozesse (Default: CPUs-1)",
+        default=max(1, min(3, (os.cpu_count() or 2) - 1)),
+        help="Anzahl paralleler Prozesse (Default: max. 3 -- Docling ist "
+        "speicherintensiv; hoehere Werte explizit angeben)",
     )
     parser.add_argument(
         "--ocr",
@@ -1608,6 +1690,13 @@ def _run_cli(argv: list[str] | None = None) -> int:
         "FTS5-Index trotzdem vollstaendig durch.",
     )
     parser.add_argument(
+        "--rerun-all",
+        action="store_true",
+        help="Auch bereits konvertierte Dateien neu konvertieren (Standard: "
+        "vorhandene, aktuelle Notizen werden uebersprungen -- Fortsetzung "
+        "nach einem Abbruch)",
+    )
+    parser.add_argument(
         "--duplicates",
         choices=["convert", "skip"],
         default="convert",
@@ -1676,6 +1765,22 @@ def _run_cli(argv: list[str] | None = None) -> int:
     if total == 0:
         print(f"Keine unterstuetzten Dateien in {input_root} gefunden.")
         return 0
+
+    # Fortsetzung nach Abbruch: Dateien mit vorhandener, aktueller Notiz
+    # ueberspringen (auch nach hartem Stopp ohne Ankuendigung).
+    resumed = 0
+    if not args.rerun_all:
+        files, already_done = filter_already_converted(
+            files, output_dir, input_root, config
+        )
+        resumed = len(already_done)
+        total = len(files)
+        if resumed:
+            print(f"{resumed} Datei(en) bereits konvertiert – werden "
+                  "uebersprungen (Fortsetzung; --rerun-all fuer Neuaufbau).")
+        if total == 0:
+            print("Alles bereits konvertiert – nichts zu tun.")
+            return 0
 
     # Duplikate (inhaltsgleiche Dateien) erkennen -- nicht zu verwechseln mit
     # der Idempotenz (unveraenderte Datei beim Wiederholungslauf).

@@ -488,3 +488,64 @@ def test_worker_status_roundtrip(tmp_path, monkeypatch):
     (out / "notiz.md").write_text("x")
     names = [f.name for f in dw.discover_files(out)]
     assert names == ["notiz.md"]
+
+
+def test_relativize_windows_backslash_links():
+    """Docling schreibt auf Windows absolute Backslash-Links -- die muessen
+    notiz-relativ und mit Forward-Slashes enden (portabler Vault)."""
+    body = (
+        "Text\n\n"
+        "![Image](C:\\Users\\bloop\\OneDrive\\test\\assets\\key\\img_1.png)\n"
+        "![Alt](C:/Users/bloop/OneDrive/test/assets/key/img_2.png)\n"
+        "![](https://example.com/extern.png)\n"
+    )
+    out = dw._relativize_asset_links(
+        body,
+        {"C:/Users/bloop/OneDrive/test/assets/key",
+         "C:\\Users\\bloop\\OneDrive\\test\\assets\\key"},
+        "../assets/key",
+    )
+    assert "![Image](../assets/key/img_1.png)" in out
+    assert "![Alt](../assets/key/img_2.png)" in out
+    assert "https://example.com/extern.png" in out       # extern unangetastet
+    assert "C:" not in out.replace("https", "")
+
+
+def test_frontmatter_original_path_is_relative(tmp_path, fake_converter):
+    src_root = tmp_path / "in"
+    (src_root / "Ordner A").mkdir(parents=True)
+    src = src_root / "Ordner A" / "doc.pdf"
+    src.write_text("x")
+    res = dw.convert_single_file(src, tmp_path / "vault", input_root=src_root,
+                                 converter=fake_converter)
+    body = Path(res.output_path).read_text(encoding="utf-8")
+    assert 'original_path: "Ordner A/doc.pdf"' in body    # portabel
+    assert "original_path_abs:" in body                    # Direktzugriff
+
+
+def test_resume_after_hard_stop(tmp_path, fake_converter):
+    """Gleiche Quelle + gleiches Ziel: bereits konvertierte Dateien werden
+    uebersprungen -- der Lauf setzt an der Abbruchstelle fort."""
+    src_root = tmp_path / "in"
+    src_root.mkdir()
+    out = tmp_path / "vault"
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        (src_root / name).write_text("x")
+    cfg = dw.ConverterConfig()
+
+    # "Vor dem Absturz": a und b sind fertig konvertiert.
+    for name in ("a.pdf", "b.pdf"):
+        assert dw.convert_single_file(src_root / name, out, input_root=src_root,
+                                      config=cfg, converter=fake_converter).success
+
+    files = dw.discover_files(src_root)
+    todo, skipped = dw.filter_already_converted(files, out, src_root, cfg)
+    assert [Path(f).name for f in todo] == ["c.pdf"]
+    assert sorted(Path(f).name for f in skipped) == ["a.pdf", "b.pdf"]
+
+    # Geaenderte Quelle wird wieder faellig.
+    import time as _t
+    _t.sleep(0.01)
+    (src_root / "a.pdf").write_text("neuer inhalt")
+    todo2, _ = dw.filter_already_converted(files, out, src_root, cfg)
+    assert sorted(Path(f).name for f in todo2) == ["a.pdf", "c.pdf"]

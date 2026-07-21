@@ -4,6 +4,25 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.5.0] – 2026-07-21
+
+### Added
+- **Fortsetzen nach Abbruch** (auch nach hartem Stopp): gleiche Quelle +
+  gleiches Ziel überspringt bereits konvertierte, aktuelle Notizen —
+  Dashboard meldet „N Datei(en) bereits konvertiert", CLI-Flag
+  `--rerun-all` erzwingt Neuaufbau.
+- **Parallele Prozesse auf max. 3 begrenzt** (Dashboard-Regler; CLI- und
+  Job-Default ebenso gekappt, explizit höhere Werte per `-w` möglich).
+
+### Fixed
+- **Windows: absolute Bild-Links in Notizen.** Die Link-Relativierung
+  griff nur bei `/`-Pfaden; Docling schreibt auf Windows aber
+  `C:\…\assets\…`. Bild-Links sind jetzt in beiden Separator-Formen
+  notiz-relativ mit `/` — der Vault übersteht Verschieben/Synchronisieren.
+- Frontmatter: `original_path` ist jetzt **relativ zum Quellordner**
+  (portabel über Systeme/Verschiebungen); der absolute Pfad steht in
+  `original_path_abs`.
+
 ## [1.4.0] – 2026-07-21
 
 ### Added

@@ -589,7 +589,7 @@ def _default_convert_batch(
 ) -> list[dw.ConversionResult]:
     """Konvertiert eine Dateiliste ueber den absturzsicheren Batch-Runner."""
     config = job.converter_config()
-    workers = max_workers or job.max_workers or max(1, (os.cpu_count() or 2) - 1)
+    workers = max_workers or job.max_workers or max(1, min(3, (os.cpu_count() or 2) - 1))
     return dw.run_conversion_batch(
         files, config, job.target, job.resolved_source(), workers,
         progress=progress
