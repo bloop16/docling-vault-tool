@@ -449,13 +449,35 @@ with st.sidebar:
         "Wird rekursiv nach unterstützten Dateien durchsucht. "
         "„Durchsuchen…“ öffnet die Ordnerauswahl.",
     )
-    output_dir = _dir_field(
-        "Ziel-Vault-Ordner", "output_dir", "DOC2VAULT_TARGET_DIR",
-        "/pfad/zum/vault",
-        "Zielordner für die Markdown-Dateien; wird bei Bedarf automatisch "
-        "angelegt. Bestehende Vaults werden analysiert und die Dateien "
-        "entsprechend eingegliedert.",
+    vault_in_source = st.checkbox(
+        _("Vault im Quellordner anlegen"),
+        key="vault_in_source",
+        help=_(
+            "Alles in einem: Der Vault entsteht als Unterordner der Quelle "
+            "und zieht bei einem Umzug des Ordners automatisch mit. Keine "
+            "Schleife – erzeugte Notizen werden beim Scan ausgeschlossen."
+        ),
     )
+    if vault_in_source:
+        _vault_sub = st.text_input(
+            _("Name des Vault-Unterordners"),
+            value="Vault",
+            key="vault_subdir_name",
+        )
+        if input_dir:
+            input_dir = str(Path(dw.normalize_user_path(input_dir)).resolve())
+            output_dir = str(Path(input_dir) / (_vault_sub.strip() or "Vault"))
+            st.caption(_("Ziel aufgelöst: {path}", path=output_dir))
+        else:
+            output_dir = ""
+    else:
+        output_dir = _dir_field(
+            "Ziel-Vault-Ordner", "output_dir", "DOC2VAULT_TARGET_DIR",
+            "/pfad/zum/vault",
+            "Zielordner für die Markdown-Dateien; wird bei Bedarf automatisch "
+            "angelegt. Bestehende Vaults werden analysiert und die Dateien "
+            "entsprechend eingegliedert.",
+        )
 
     # Portable Angaben: ~ und $VAR/%VAR% werden expandiert; RELATIVE
     # Quellangaben beziehen sich auf den Ziel-Vault-Ordner -- "../Quelle"
