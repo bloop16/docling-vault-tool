@@ -512,8 +512,8 @@ with tab_settings:
         max_workers = st.slider(
             _("Parallele Prozesse"),
             min_value=1,
-            max_value=cpu_count,
-            value=max(1, cpu_count - 1),
+            max_value=min(3, cpu_count),
+            value=max(1, min(2, cpu_count - 1)),
             key="set_workers",
             help=_("Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren."),
         )
@@ -914,6 +914,21 @@ with tab_convert:
         total = len(files)
         if total == 0:
             st.warning(_("Keine unterstützten Dateien gefunden."))
+            st.stop()
+
+        # Fortsetzung nach Abbruch (auch nach hartem Stopp): Dateien mit
+        # vorhandener, aktueller Notiz nicht erneut konvertieren.
+        files, _already_done = dw.filter_already_converted(
+            files, out_root, input_root, config
+        )
+        if _already_done:
+            st.info(_(
+                "{n} Datei(en) bereits konvertiert – der Lauf setzt an der "
+                "Abbruchstelle fort.", n=len(_already_done),
+            ))
+        total = len(files)
+        if total == 0:
+            st.success(_("Alles bereits konvertiert – nichts zu tun."))
             st.stop()
 
         _overline(_("Fortschritt"))

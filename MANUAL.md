@@ -97,6 +97,21 @@ Balken mit %-Schätzung („datei.pdf – ca. 40 % (Seite ~12/30)"). Die
 Schätzung basiert auf der Seitenzahl und der gelernten Zeit pro Seite —
 so ist sichtbar, dass auch bei großen Dokumenten etwas vorangeht.
 
+**Fortsetzen nach Abbruch:** Wird die Konvertierung gestoppt — auch hart,
+ohne Ankündigung (Absturz, Prozess beendet) — setzt der nächste Lauf mit
+gleicher Quelle und gleichem Ziel automatisch an der Abbruchstelle fort:
+Dateien, deren Notiz bereits existiert und aktueller als die Quelle ist,
+werden übersprungen (die Notiz wird erst nach vollständiger Konvertierung
+geschrieben, halbe Notizen gibt es also nicht). CLI: `--rerun-all`
+erzwingt eine komplette Neukonvertierung.
+
+**Portable Notizen:** Bild-Links in den Notizen sind relativ zur Notiz und
+nutzen `/`-Separatoren — der Vault kann verschoben oder auf ein anderes
+System synchronisiert werden, ohne dass Links brechen. Das Frontmatter-Feld
+`original_path` enthält den Pfad **relativ zum Quellordner** (portabel);
+der absolute Pfad des Konvertierungs-Systems steht zusätzlich in
+`original_path_abs`.
+
 **Portable Ordnerangaben:** In allen Pfadfeldern werden `~` und
 Umgebungsvariablen (`$VAR` bzw. `%VAR%`) expandiert. Eine **relative**
 Quellordner-Angabe bezieht sich auf den Ziel-Vault-Ordner: `../Dokumente`
