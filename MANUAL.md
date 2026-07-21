@@ -91,6 +91,22 @@ Die Seitenleiste bündelt alle Einstellungen: Verzeichnisse, parallele
 Prozesse, Docling-Funktionen (Bilder + Auflösung, Tabellenerkennung, OCR),
 Excel-Sheet-Limit und den Umgang mit Originaldateien.
 
+**Fortschritt je Datei:** Während der Konvertierung zeigt das Dashboard
+zusätzlich zum Gesamtbalken für jede gerade laufende Datei einen eigenen
+Balken mit %-Schätzung („datei.pdf – ca. 40 % (Seite ~12/30)"). Die
+Schätzung basiert auf der Seitenzahl und der gelernten Zeit pro Seite —
+so ist sichtbar, dass auch bei großen Dokumenten etwas vorangeht.
+
+**Portable Ordnerangaben:** In allen Pfadfeldern werden `~` und
+Umgebungsvariablen (`$VAR` bzw. `%VAR%`) expandiert. Eine **relative**
+Quellordner-Angabe bezieht sich auf den Ziel-Vault-Ordner: `../Dokumente`
+bezeichnet damit auf jedem System denselben Ordner, der **parallel zum
+Vault** liegt — egal, unter welchem Laufwerk/Prefix der gemeinsame
+Elternordner gemountet ist (OneDrive auf Windows, Mount im Container).
+Die aufgelöste Form wird in der Seitenleiste angezeigt. Jobs speichern
+diese Relativ-Beziehung mit: Existiert der absolute Quellpfad auf einem
+System nicht, wird die Quelle automatisch über den Zielordner gefunden.
+
 **Sprache:** Oben in der Seitenleiste lässt sich die Oberfläche zwischen
 **Deutsch** (Standard) und **Englisch** umschalten; die Vorbelegung steuert
 die Umgebungsvariable `DOC2VAULT_LANG=de|en` (praktisch für den

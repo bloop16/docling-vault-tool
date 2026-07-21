@@ -134,6 +134,20 @@ class Job:
     # Neue Dateien, deren Inhalt bereits konvertiert wurde (oder die
     # untereinander inhaltsgleich sind), ueberspringen statt konvertieren.
     skip_duplicates: bool = False
+    # Quelle relativ zum Ziel (z. B. "../Hunter DataBase"): macht den Job
+    # portabel -- existiert der absolute Pfad auf diesem System nicht,
+    # wird die Quelle ueber den Zielordner aufgeloest.
+    source_rel: str | None = None
+
+    def resolved_source(self) -> str:
+        """Quellordner dieses Systems: absolut, sonst relativ zum Ziel."""
+        if Path(self.source).is_dir():
+            return self.source
+        if self.source_rel:
+            candidate = (Path(self.target) / self.source_rel).resolve()
+            if candidate.is_dir():
+                return str(candidate)
+        return self.source
 
     def converter_config(self) -> dw.ConverterConfig:
         """Rekonstruiert die ``ConverterConfig`` aus dem gespeicherten Plan."""
@@ -299,8 +313,13 @@ def add_job(
     if config is None:
         config = dw.recommend_config(dw.analyze_vault(target))
     cfg_dict = {k: getattr(config, k) for k in _CONFIG_FIELDS}
-    target_path = Path(target).resolve()
+    target_path = Path(dw.normalize_user_path(target)).resolve()
     target_path.mkdir(parents=True, exist_ok=True)  # Ziel bei Bedarf anlegen
+    source_abs = Path(dw.resolve_source_dir(source, str(target_path)))
+    try:
+        source_rel = os.path.relpath(source_abs, target_path)
+    except ValueError:
+        source_rel = None   # z. B. unterschiedliche Windows-Laufwerke
     with _jobs_write_lock():
         jobs = load_jobs()
         existing = {j.id for j in jobs}
@@ -312,12 +331,13 @@ def add_job(
             n += 1
         job = Job(
             id=job_id, name=name,
-            source=str(Path(source).resolve()),
+            source=str(source_abs),
             target=str(target_path),
             config=cfg_dict, poll_interval=poll_interval,
             max_workers=max_workers,
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             build_vault=build_vault,
+            source_rel=source_rel,
         )
         jobs.append(job)
         save_jobs(jobs)
@@ -472,7 +492,7 @@ def scan_changes(job: Job, manifest: dict | None = None) -> ChangeSet:
     # bzw. archivierte Originale selbst als Quelle erkannt.
     cfg = job.converter_config()
     source_files = dw.discover_files(
-        job.source, exclude_dirs=(job.target, cfg.archive_dir)
+        job.resolved_source(), exclude_dirs=(job.target, cfg.archive_dir)
     )
     for path in source_files:
         key = str(path)
@@ -571,7 +591,8 @@ def _default_convert_batch(
     config = job.converter_config()
     workers = max_workers or job.max_workers or max(1, (os.cpu_count() or 2) - 1)
     return dw.run_conversion_batch(
-        files, config, job.target, job.source, workers, progress=progress
+        files, config, job.target, job.resolved_source(), workers,
+        progress=progress
     )
 
 
@@ -818,7 +839,7 @@ def watch_job(
                         changed.set()
 
             observer = Observer()
-            observer.schedule(_AnyFileChange(), job.source, recursive=True)
+            observer.schedule(_AnyFileChange(), job.resolved_source(), recursive=True)
             observer.start()
         except Exception:
             if use_events is True:
@@ -1135,7 +1156,7 @@ def _run_cli(argv: list[str] | None = None) -> int:
                 f"Ereignisse + Sicherheits-Rescan alle {job.poll_interval}s"
                 if events_active else f"Polling alle {job.poll_interval}s"
             )
-            print(f"Überwache {job.source} ({mode_txt}). Ctrl+C zum Beenden.")
+            print(f"Überwache {job.resolved_source()} ({mode_txt}). Ctrl+C zum Beenden.")
 
             def _cycle(s: JobRunSummary):
                 if s.converted_ok or s.converted_failed:

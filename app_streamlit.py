@@ -457,6 +457,21 @@ with st.sidebar:
         "entsprechend eingegliedert.",
     )
 
+    # Portable Angaben: ~ und $VAR/%VAR% werden expandiert; RELATIVE
+    # Quellangaben beziehen sich auf den Ziel-Vault-Ordner -- "../Quelle"
+    # findet damit auf jedem System denselben Ordner parallel zum Vault.
+    _resolved_out = (
+        str(Path(dw.normalize_user_path(output_dir)).resolve())
+        if output_dir else ""
+    )
+    _resolved_in = dw.resolve_source_dir(input_dir, _resolved_out)
+    if input_dir and _resolved_in != input_dir:
+        st.caption(_("Aufgelöst: {path}", path=_resolved_in))
+    if output_dir and _resolved_out != output_dir:
+        st.caption(_("Ziel aufgelöst: {path}", path=_resolved_out))
+    input_dir = _resolved_in
+    output_dir = _resolved_out
+
     st.divider()
     st.caption(_(
         "Alle Verarbeitungs-Optionen (OCR, Bilder, Excel, Originaldateien) "
@@ -910,12 +925,16 @@ with tab_convert:
         ph_fail = m3.empty()
         ph_eta = m4.empty()
         ph_current = st.empty()
+        # Je-Datei-Fortschritt: die Worker melden ihre aktive Datei ueber
+        # Statusdateien, der Heartbeat rendert daraus %-Schaetzungen.
+        ph_active = st.empty()
         # Klick unterbricht das laufende Skript an der naechsten UI-Ausgabe
         # (Heartbeat/Fortschritt); der Runner beendet die Worker dann sofort.
         st.button(_("Konvertierung abbrechen"), key="cancel_run")
 
         stats = {"done": 0, "ok": 0, "moved": 0, "images": 0,
-                 "reduced": 0, "pdfium": 0}
+                 "reduced": 0, "pdfium": 0,
+                 "page_time": 0.0, "page_count": 0}
         failures: list = []
         start_time = time.perf_counter()
 
@@ -932,6 +951,10 @@ with tab_convert:
                     stats["pdfium"] += 1
             else:
                 failures.append(res)
+            # Sekunden-pro-Seite lernen (Basis der Je-Datei-Schaetzung).
+            if getattr(res, "num_pages", None) and res.duration_s:
+                stats["page_time"] += res.duration_s
+                stats["page_count"] += res.num_pages
 
             elapsed = time.perf_counter() - start_time
             rate = done / elapsed if elapsed else 0
@@ -948,8 +971,8 @@ with tab_convert:
 
         def _ui_heartbeat() -> None:
             # Sekuendlicher Tick, solange die Worker rechnen: haelt die
-            # Restzeit aktuell und ist der Punkt, an dem ein Abbrechen-Klick
-            # das Skript tatsaechlich unterbricht.
+            # Restzeit aktuell, zeigt den Je-Datei-Fortschritt und ist der
+            # Punkt, an dem ein Abbrechen-Klick das Skript unterbricht.
             elapsed = time.perf_counter() - start_time
             rate = stats["done"] / elapsed if elapsed else 0
             if rate:
@@ -957,6 +980,31 @@ with tab_convert:
                 ph_eta.metric(_("Restzeit"), _format_duration(eta))
             else:
                 ph_eta.metric(_("Restzeit"), "…")
+
+            entries = dw.read_worker_status(out_root)
+            with ph_active.container():
+                now = time.time()
+                sec_per_page = (
+                    stats["page_time"] / stats["page_count"]
+                    if stats["page_count"] else 5.0
+                )
+                for entry in entries:
+                    fname = entry.get("file") or ""
+                    running = max(0.0, now - float(entry.get("started") or now))
+                    pages = entry.get("pages")
+                    if pages:
+                        frac = min(0.95, running / max(1.0, pages * sec_per_page))
+                        page_now = min(pages, int(running / max(0.5, sec_per_page)) + 1)
+                        st.progress(frac, text=_(
+                            "{name} – ca. {pct} % (Seite ~{page}/{pages})",
+                            name=fname, pct=int(frac * 100),
+                            page=page_now, pages=pages,
+                        ))
+                    else:
+                        st.progress(min(0.95, running / 60.0), text=_(
+                            "{name} – läuft seit {sec} s",
+                            name=fname, sec=int(running),
+                        ))
 
         # Absturzsicherer Runner: uebersteht harte Worker-Abstuerze (z. B.
         # Speicher bei riesigen PDFs), statt den ganzen Batch zu verlieren.

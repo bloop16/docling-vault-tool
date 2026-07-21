@@ -455,3 +455,36 @@ def test_new_memory_error_texts_classified():
     assert dw._classify_error(
         "numpy ArrayMemoryError: Unable to allocate 22.5 MiB"
     )[0] == "speicher"
+
+
+def test_resolve_source_dir_portable(tmp_path, monkeypatch):
+    """Relative Quelle bezieht sich auf das Ziel: '../Quelle' findet auf
+    jedem System denselben Ordner parallel zum Vault."""
+    root = tmp_path / "OneDrive"
+    (root / "Quelle").mkdir(parents=True)
+    (root / "Vault").mkdir()
+
+    resolved = dw.resolve_source_dir("../Quelle", str(root / "Vault"))
+    assert Path(resolved) == (root / "Quelle").resolve()
+
+    # Absolute Angaben bleiben unangetastet; ~/$VAR wird expandiert.
+    abs_in = str((root / "Quelle").resolve())
+    assert dw.resolve_source_dir(abs_in, str(root / "Vault")) == abs_in
+    monkeypatch.setenv("MEIN_ORDNER", str(root))
+    assert dw.normalize_user_path("$MEIN_ORDNER/Quelle") == f"{root}/Quelle"
+    assert dw.resolve_source_dir("", str(root)) == ""
+
+
+def test_worker_status_roundtrip(tmp_path, monkeypatch):
+    out = tmp_path / "vault"
+    out.mkdir()
+    monkeypatch.setattr(dw, "_WORKER_OUTPUT", out)
+    dw._write_worker_status({"file": "a.pdf", "pages": 12, "started": 123.0})
+    entries = dw.read_worker_status(out)
+    assert entries == [{"file": "a.pdf", "pages": 12, "started": 123.0}]
+    dw._write_worker_status({"file": None})
+    assert dw.read_worker_status(out) == []       # frei = nicht gelistet
+    # Statusordner ist versteckt -> Discovery ignoriert ihn.
+    (out / "notiz.md").write_text("x")
+    names = [f.name for f in dw.discover_files(out)]
+    assert names == ["notiz.md"]
