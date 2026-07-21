@@ -136,6 +136,7 @@
   "Nur für Scans ohne Textebene aktivieren – deutlich langsamer.": "Actívelo solo para escaneos sin capa de texto: bastante más lento.",
   "OCR aktiv": "OCR activado",
   "OCR für gescannte PDFs": "OCR para PDF escaneados",
+  "OCR mit {n} parallelen Prozessen braucht viel Arbeitsspeicher – jeder Prozess lädt einen eigenen Modellstapel. Bei Speicherfehlern (std::bad_alloc) 1–2 Prozesse verwenden.": "El OCR con {n} procesos paralelos necesita mucha memoria: cada proceso carga su propia pila de modelos. Si hay errores de memoria (std::bad_alloc), use 1–2 procesos.",
   "OCR-Engine": "Motor OCR",
   "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download (modelscope.cn) ist oft blockiert. Auf die Standard-Engine EasyOCR wechseln (Modelle von GitHub) oder den RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang erneut laden.": "Faltan archivos de modelos OCR o están dañados: la descarga de RapidOCR (modelscope.cn) suele estar bloqueada. Cambie al motor predeterminado EasyOCR (modelos de GitHub) o borre la carpeta de modelos de RapidOCR y descárguelos de nuevo con acceso de red operativo.",
   "OCR-Sprachen": "Idiomas de OCR",

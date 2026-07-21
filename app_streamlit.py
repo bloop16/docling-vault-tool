@@ -23,11 +23,14 @@ from pathlib import Path
 if multiprocessing.current_process().name != "MainProcess":
     # Windows-Spawn-Worker importieren dieses Skript beim Prozessstart als
     # Hauptmodul erneut ("bare mode"). Streamlit wuerde dann pro Worker
-    # "to view a Streamlit app..." / "Session state does not function"
-    # ins Log schreiben -- fuer Worker bedeutungslos, daher stumm.
+    # dutzendfach "to view a Streamlit app..." / "Session state does not
+    # function" / "No runtime found" ins Log schreiben. Ein setLevel auf dem
+    # "streamlit"-Logger reicht NICHT: Streamlit konfiguriert seine Logger
+    # beim Import selbst neu. logging.disable wirkt global und nur in
+    # diesem Worker-Prozess -- der braucht keinerlei Log unterhalb ERROR.
     import logging as _logging
 
-    _logging.getLogger("streamlit").setLevel(_logging.ERROR)
+    _logging.disable(_logging.WARNING)
 
 import streamlit as st
 
@@ -566,6 +569,14 @@ with tab_settings:
             ))
             if _engine_warning:
                 st.warning(_(_engine_warning), icon="⚠️")
+            if max_workers > 2:
+                st.info(_(
+                    "OCR mit {n} parallelen Prozessen braucht viel "
+                    "Arbeitsspeicher – jeder Prozess lädt einen eigenen "
+                    "Modellstapel. Bei Speicherfehlern (std::bad_alloc) "
+                    "1–2 Prozesse verwenden.",
+                    n=max_workers,
+                ))
 
     with col_right:
         _overline(_("Excel-Arbeitsmappen"))

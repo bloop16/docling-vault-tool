@@ -203,6 +203,19 @@ def _mute_torch_pin_memory_warning() -> None:
     warnings.filterwarnings(
         "ignore", message=r".*pin_memory.*no accelerator.*"
     )
+    # EasyOCR nutzt quantisierte torch-Module; die Deprecation-Warnung dazu
+    # erscheint sonst einmal pro Worker-Prozess.
+    warnings.filterwarnings(
+        "ignore", message=r".*quantize_per_tensor.*deprecated.*"
+    )
+
+
+def _mute_worker_progress_bars() -> None:
+    """Fortschrittsbalken ("Loading weights: 100%|...") sind in parallelen
+    Worker-Prozessen nur Log-Rauschen -- pro Worker eine volle tqdm-Zeile."""
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 _mute_streamlit_bare_mode_warning()
@@ -754,7 +767,8 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     ),
     (
         ("memoryerror", "cannot allocate", "out of memory", "oom", "killed",
-         "bad_alloc"),
+         "bad_alloc", "not enough memory", "unable to allocate",
+         "defaultcpuallocator", "teilkonvertierung"),
         "speicher",
         "Zu wenig Arbeitsspeicher – Anzahl paralleler Prozesse reduzieren.",
     ),
@@ -963,6 +977,25 @@ def convert_single_file(
             convert_input = trimmed_tmp
 
         result = converter.convert(convert_input)
+
+        # Teilkonvertierung ist KEIN Erfolg: bei Speicherdruck scheitern
+        # einzelne Seiten in Docling ("Stage preprocess failed ...
+        # std::bad_alloc"), der Rest laeuft weiter -- ohne diese Pruefung
+        # entstuende eine Notiz mit still fehlenden Seiten. Als Fehler
+        # gemeldet greift stattdessen der automatische reduzierte
+        # Zweitversuch im isolierten Einzelprozess.
+        status = str(getattr(result, "status", "")).lower()
+        if "partial" in status:
+            errors = getattr(result, "errors", None) or []
+            detail = "; ".join(
+                str(getattr(e, "error_message", e)) for e in errors[:10]
+            )
+            raise RuntimeError(
+                f"Teilkonvertierung: {len(errors) or 'einige'} Seite(n)/"
+                f"Stufe(n) fehlgeschlagen – Notiz wäre unvollständig. "
+                f"{detail[:400]}"
+            )
+
         doc = result.document
 
         md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,6 +1111,7 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
     _mute_streamlit_bare_mode_warning()
     _mute_torch_pin_memory_warning()
+    _mute_worker_progress_bars()
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
@@ -1583,6 +1617,10 @@ def _run_cli(argv: list[str] | None = None) -> int:
     ):
         print("  WARNUNG: Bilddateien im Batch, aber OCR ist aus -- "
               "gescannte Bilder ergeben leere Notizen (--ocr aktivieren).")
+    if config.do_ocr and args.workers > 2:
+        print(f"  HINWEIS: OCR mit {args.workers} parallelen Prozessen "
+              "braucht viel RAM (je Prozess ein eigener Modellstapel). "
+              "Bei Speicherfehlern (std::bad_alloc) -w 1 oder -w 2 nutzen.")
     if args.build_vault:
         print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
               "Wikilinks + Frontmatter")

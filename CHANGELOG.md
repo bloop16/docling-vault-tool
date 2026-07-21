@@ -4,6 +4,29 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.3.1] – 2026-07-21
+
+Auswertung eines Windows-Laufs mit aktivem EasyOCR unter Speicherdruck.
+
+### Fixed
+- **Teilkonvertierungen werden nicht mehr still als Erfolg gewertet**:
+  Scheitern einzelne Seiten in Docling (z. B. `Stage preprocess failed …
+  std::bad_alloc` bei RAM-Mangel), entstand bisher eine Notiz mit
+  fehlenden Seiten ohne jede Meldung. Jetzt gilt die Datei als
+  Speicherfehler und durchläuft automatisch den reduzierten Zweitversuch
+  im isolierten Einzelprozess.
+- Weitere Speicherfehler-Texte klassifiziert (`not enough memory`,
+  `Unable to allocate`, `DefaultCPUAllocator`).
+- Log-Hygiene Windows-Worker: Streamlit-Bare-Mode-Meldungen jetzt
+  wirksam stumm (Streamlit rekonfiguriert seine Logger beim Import —
+  `logging.disable` nur im Worker-Prozess), torch-Quantisierungs-Warnung
+  gefiltert, „Loading weights"-Fortschrittsbalken je Worker deaktiviert.
+
+### Added
+- RAM-Hinweis in Einstellungen und CLI-Plan, wenn OCR mit mehr als
+  2 parallelen Prozessen kombiniert wird (je Prozess ein eigener
+  Modellstapel).
+
 ## [1.3.0] – 2026-07-19
 
 ### Added

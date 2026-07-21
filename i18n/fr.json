@@ -136,6 +136,7 @@
   "Nur für Scans ohne Textebene aktivieren – deutlich langsamer.": "À activer uniquement pour les scans sans couche de texte – nettement plus lent.",
   "OCR aktiv": "OCR activé",
   "OCR für gescannte PDFs": "OCR pour les PDF numérisés",
+  "OCR mit {n} parallelen Prozessen braucht viel Arbeitsspeicher – jeder Prozess lädt einen eigenen Modellstapel. Bei Speicherfehlern (std::bad_alloc) 1–2 Prozesse verwenden.": "L'OCR avec {n} processus parallèles demande beaucoup de mémoire – chaque processus charge sa propre pile de modèles. En cas d'erreurs mémoire (std::bad_alloc), utilisez 1 à 2 processus.",
   "OCR-Engine": "Moteur OCR",
   "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download (modelscope.cn) ist oft blockiert. Auf die Standard-Engine EasyOCR wechseln (Modelle von GitHub) oder den RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang erneut laden.": "Les fichiers de modèles OCR sont manquants ou endommagés – le téléchargement RapidOCR (modelscope.cn) est souvent bloqué. Passer au moteur par défaut EasyOCR (modèles depuis GitHub) ou supprimer le dossier de modèles RapidOCR et retélécharger avec un accès réseau fonctionnel.",
   "OCR-Sprachen": "Langues OCR",
