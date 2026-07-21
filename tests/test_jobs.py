@@ -398,3 +398,20 @@ def test_scan_changes_skips_duplicates(jobs_home, tmp_path):
     jm.update_job(job.id, skip_duplicates=False)
     cs2 = jm.scan_changes(jm.get_job(job.id))
     assert len(cs2.new) == 3 and not cs2.duplicates
+
+
+def test_job_resolved_source_fallback(jobs_home, tmp_path):
+    """Absoluter Quellpfad existiert nicht (anderes System) -> Aufloesung
+    ueber die gespeicherte Relativ-Beziehung zum Ziel."""
+    root = tmp_path / "sync"
+    (root / "Quelle").mkdir(parents=True)
+    job = jm.add_job("Portabel", str(root / "Quelle"), str(root / "Vault"))
+    assert job.source_rel is not None
+
+    # Simulierter Systemwechsel: kompletter Baum liegt unter neuem Prefix.
+    moved = tmp_path / "woanders"
+    moved.mkdir()
+    (root / "Quelle").rename(moved / "Quelle")
+    (root / "Vault").rename(moved / "Vault")
+    job.target = str(moved / "Vault")             # Ziel des neuen Systems
+    assert Path(job.resolved_source()) == (moved / "Quelle").resolve()

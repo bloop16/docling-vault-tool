@@ -4,6 +4,20 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.4.0] – 2026-07-21
+
+### Added
+- **Fortschritt je Datei**: Das Dashboard zeigt für jede aktive Datei
+  einen eigenen Balken mit %-Schätzung und ~Seitenangabe (Worker melden
+  Datei + Seitenzahl über Statusdateien; die Zeit pro Seite wird aus
+  abgeschlossenen Dateien gelernt). Sichtbar, dass große Dokumente
+  vorangehen.
+- **Portable Ordnerangaben**: `~`/`$VAR`/`%VAR%` werden in allen
+  Pfadfeldern expandiert; relative Quellangaben beziehen sich auf den
+  Ziel-Vault-Ordner (`../Dokumente` = parallel zum Vault, systemübergreifend
+  identisch). Jobs speichern die Relativ-Beziehung und finden ihre Quelle
+  auch, wenn der absolute Pfad auf einem anderen System abweicht.
+
 ## [1.3.1] – 2026-07-21
 
 Auswertung eines Windows-Laufs mit aktivem EasyOCR unter Speicherdruck.

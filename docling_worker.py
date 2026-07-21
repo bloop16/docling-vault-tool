@@ -176,6 +176,9 @@ class ConversionResult:
     pdf_backend: str | None = None
     # Konvertierung ok, aber Archivieren/Loeschen des Originals schlug fehl.
     post_action_error: str | None = None
+    # Seitenzahl (nur PDF, billig via pypdfium) -- Basis fuer die
+    # Fortschrittsschaetzung je Datei im Dashboard.
+    num_pages: int | None = None
 
 
 def _mute_streamlit_bare_mode_warning() -> None:
@@ -315,6 +318,33 @@ def check_ocr_engine(config: ConverterConfig) -> str | None:
             "und neu starten."
         )
     return None
+
+
+def normalize_user_path(raw: str | None) -> str:
+    """Nutzereingabe zu einem nutzbaren Pfad: ``~`` und Umgebungsvariablen
+    (``$VAR`` bzw. ``%VAR%``) werden expandiert -- damit funktionieren
+    dieselben Angaben auf unterschiedlichen Systemen/Benutzerkonten."""
+    if not raw:
+        return ""
+    return os.path.expandvars(os.path.expanduser(raw.strip()))
+
+
+def resolve_source_dir(raw: str | None, target: str | None) -> str:
+    """Quellordner-Angabe aufloesen (portabel ueber Systeme).
+
+    RELATIVE Angaben beziehen sich auf den Ziel-Vault-Ordner: ``../Quelle``
+    bezeichnet damit auf jedem System denselben Ordner, der parallel zum
+    Vault liegt -- egal, wo der gemeinsame Elternordner gemountet ist.
+    Ohne Ziel dient das Arbeitsverzeichnis als Basis.
+    """
+    raw = normalize_user_path(raw)
+    if not raw:
+        return ""
+    path = Path(raw)
+    if path.is_absolute():
+        return str(path)
+    base = Path(normalize_user_path(target)).resolve() if target else Path.cwd()
+    return str((base / path).resolve())
 
 
 def check_paths(
@@ -821,6 +851,62 @@ def xlsx_sheet_names(path: os.PathLike | str) -> list[str]:
     return [el.get("name", "") for el in root.findall("m:sheets/m:sheet", ns)]
 
 
+# Versteckter Status-Ordner im Ziel: jeder Worker meldet dort, welche Datei
+# er gerade bearbeitet (fuer die Je-Datei-Fortschrittsanzeige im Dashboard).
+# Versteckt -> wird von discover_files/Vault-Build automatisch ignoriert.
+STATUS_DIRNAME = ".doc2vault-status"
+
+
+def status_dir(output_dir: os.PathLike | str) -> Path:
+    return Path(output_dir) / STATUS_DIRNAME
+
+
+def pdf_page_count(path: os.PathLike | str) -> int | None:
+    """Seitenzahl einer PDF (billig, ohne Rendern); None bei Nicht-PDF/Fehler."""
+    if not str(path).lower().endswith(".pdf"):
+        return None
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_worker_status(payload: dict) -> None:
+    """Best-effort-Statusmeldung des Workers (niemals lauffaehigkeitskritisch)."""
+    if _WORKER_OUTPUT is None:
+        return
+    try:
+        d = status_dir(_WORKER_OUTPUT)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"worker-{os.getpid()}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def read_worker_status(output_dir: os.PathLike | str) -> list[dict]:
+    """Aktive Datei je Worker (fuer die Fortschrittsanzeige)."""
+    entries: list[dict] = []
+    d = status_dir(output_dir)
+    if not d.is_dir():
+        return entries
+    for f in d.glob("worker-*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("file"):
+            entries.append(data)
+    return entries
+
+
 def _stem_collides(source: Path) -> bool:
     """True, wenn im selben Ordner eine WEITERE unterstuetzte Datei mit
     gleichem Stamm liegt (z. B. Word-Datei + daraus exportiertes PDF)."""
@@ -1131,6 +1217,13 @@ def convert_file_task(source_path: str) -> ConversionResult:
     """
     global _WORKER_CONVERTER_REDUCED
 
+    pages = pdf_page_count(source_path)
+    _write_worker_status({
+        "file": Path(source_path).name,
+        "pages": pages,
+        "started": time.time(),
+    })
+
     config = _WORKER_CONFIG
     converter = _WORKER_CONVERTER
     reduced = False
@@ -1192,7 +1285,9 @@ def convert_file_task(source_path: str) -> ConversionResult:
         if retry is not None and retry.success:
             retry.reduced_mode = result.reduced_mode
             retry.pdf_backend = "pypdfium"
-            return retry
+            result = retry
+    result.num_pages = pages
+    _write_worker_status({"file": None})   # Worker wieder frei
     return result
 
 
@@ -1399,6 +1494,7 @@ def run_conversion_batch(
             ).strip()
             _emit(first_fail)
 
+    shutil.rmtree(status_dir(output_dir), ignore_errors=True)
     return results
 
 
@@ -1532,8 +1628,8 @@ def _run_cli(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    input_root = Path(args.input).resolve()
-    output_dir = Path(args.output).resolve()
+    output_dir = Path(normalize_user_path(args.output)).resolve()
+    input_root = Path(resolve_source_dir(args.input, str(output_dir)))
     if not input_root.is_dir():
         parser.error(f"Quellordner existiert nicht: {input_root}")
     path_error = check_paths(input_root, output_dir)
