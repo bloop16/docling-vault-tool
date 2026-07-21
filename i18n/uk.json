@@ -136,6 +136,7 @@
   "Nur für Scans ohne Textebene aktivieren – deutlich langsamer.": "Вмикайте лише для сканів без текстового шару – значно повільніше.",
   "OCR aktiv": "OCR увімкнено",
   "OCR für gescannte PDFs": "OCR для сканованих PDF",
+  "OCR mit {n} parallelen Prozessen braucht viel Arbeitsspeicher – jeder Prozess lädt einen eigenen Modellstapel. Bei Speicherfehlern (std::bad_alloc) 1–2 Prozesse verwenden.": "OCR з {n} паралельними процесами потребує багато пам'яті – кожен процес завантажує власний набір моделей. У разі помилок пам'яті (std::bad_alloc) використовуйте 1–2 процеси.",
   "OCR-Engine": "OCR-рушій",
   "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download (modelscope.cn) ist oft blockiert. Auf die Standard-Engine EasyOCR wechseln (Modelle von GitHub) oder den RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang erneut laden.": "Файли моделей OCR відсутні або пошкоджені – завантаження RapidOCR (modelscope.cn) часто блокується. Перемкніться на стандартний рушій EasyOCR (моделі з GitHub) або видаліть теку моделей RapidOCR і завантажте знову за робочого доступу до мережі.",
   "OCR-Sprachen": "Мови OCR",

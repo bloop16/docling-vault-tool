@@ -420,3 +420,38 @@ def test_find_duplicate_files(tmp_path):
     assert sorted(p.name for p in paths) == ["a.pdf", "kopie.pdf"]
     # Nicht existierende Dateien stoeren nicht.
     assert dw.find_duplicate_files([tmp_path / "fehlt.pdf"]) == {}
+
+
+def test_partial_conversion_is_failure(tmp_path):
+    """PARTIAL_SUCCESS (Seiten mit bad_alloc uebersprungen) darf nicht als
+    Erfolg durchgehen -- sonst entstehen Notizen mit still fehlenden Seiten.
+    Als 'speicher' klassifiziert greift der reduzierte Zweitversuch."""
+
+    class _PartialConverter:
+        def convert(self, source):
+            class _Err:
+                error_message = "Stage preprocess failed: std::bad_alloc"
+
+            return type("R", (), {
+                "status": "ConversionStatus.PARTIAL_SUCCESS",
+                "errors": [_Err(), _Err()],
+                "document": None,
+            })()
+
+    src = tmp_path / "gross.pdf"
+    src.write_text("x")
+    res = dw.convert_single_file(src, tmp_path / "out", input_root=tmp_path,
+                                 converter=_PartialConverter())
+    assert not res.success
+    assert res.error_category == "speicher"
+    assert "Teilkonvertierung" in res.error
+    assert "bad_alloc" in (res.error_detail or "") or "bad_alloc" in res.error
+
+
+def test_new_memory_error_texts_classified():
+    assert dw._classify_error(
+        "DefaultCPUAllocator: not enough memory: you tried to allocate"
+    )[0] == "speicher"
+    assert dw._classify_error(
+        "numpy ArrayMemoryError: Unable to allocate 22.5 MiB"
+    )[0] == "speicher"

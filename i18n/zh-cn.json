@@ -136,6 +136,7 @@
   "Nur für Scans ohne Textebene aktivieren – deutlich langsamer.": "仅对无文本层的扫描件启用——速度明显变慢。",
   "OCR aktiv": "OCR 已启用",
   "OCR für gescannte PDFs": "扫描版 PDF 的 OCR",
+  "OCR mit {n} parallelen Prozessen braucht viel Arbeitsspeicher – jeder Prozess lädt einen eigenen Modellstapel. Bei Speicherfehlern (std::bad_alloc) 1–2 Prozesse verwenden.": "使用 {n} 个并行进程运行 OCR 需要大量内存——每个进程都会加载自己的模型栈。出现内存错误（std::bad_alloc）时请改用 1–2 个进程。",
   "OCR-Engine": "OCR 引擎",
   "OCR-Modelldateien fehlen oder sind beschädigt – der RapidOCR-Download (modelscope.cn) ist oft blockiert. Auf die Standard-Engine EasyOCR wechseln (Modelle von GitHub) oder den RapidOCR-Modellordner löschen und mit funktionierendem Netzzugang erneut laden.": "OCR 模型文件缺失或损坏——RapidOCR 的下载源(modelscope.cn)经常被屏蔽。请切换到默认引擎 EasyOCR(模型来自 GitHub),或删除 RapidOCR 模型文件夹并在网络正常时重新下载。",
   "OCR-Sprachen": "OCR 语言",
