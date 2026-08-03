@@ -4,6 +4,18 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.0] – 2026-08-03
+
+### Changed
+- **Deckel für parallele Prozesse gelockert.** Der Dashboard-Regler
+  „Parallele Prozesse" erlaubte bisher maximal 3 Prozesse, egal wie viele
+  Kerne/RAM die Maschine hat. Die Obergrenze richtet sich jetzt nach der
+  tatsächlichen Kernzahl (Kerne − 1); der Standardwert bleibt konservativ
+  bei `min(8, Kerne − 1)`, damit bestehende Installationen sich nicht
+  plötzlich anders verhalten. Wer mehr Kerne/RAM zur Verfügung hat, kann
+  im Regler jetzt bewusst höher gehen. CLI-Default (`--workers`) folgt
+  derselben Formel.
+
 ## [1.6.0] – 2026-07-21
 
 ### Added

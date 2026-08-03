@@ -534,10 +534,15 @@ with tab_settings:
         max_workers = st.slider(
             _("Parallele Prozesse"),
             min_value=1,
-            max_value=min(3, cpu_count),
-            value=max(1, min(2, cpu_count - 1)),
+            max_value=dw.max_selectable_workers(cpu_count),
+            value=dw.default_max_workers(cpu_count),
             key="set_workers",
-            help=_("Docling ist CPU- und speicherintensiv. Bei knappem RAM reduzieren."),
+            help=_(
+                "Docling ist CPU- und speicherintensiv -- jeder Prozess laedt "
+                "einen eigenen Modellstapel. Bei knappem RAM reduzieren, bei "
+                "starker Hardware (viele Kerne/RAM) höher als den "
+                "Standardwert wählen."
+            ),
         )
 
         _overline(_("Docling-Funktionen"))
@@ -606,12 +611,12 @@ with tab_settings:
             ))
             if _engine_warning:
                 st.warning(_(_engine_warning), icon="⚠️")
-            if max_workers > 2:
+            if max_workers > 4:
                 st.info(_(
                     "OCR mit {n} parallelen Prozessen braucht viel "
                     "Arbeitsspeicher – jeder Prozess lädt einen eigenen "
                     "Modellstapel. Bei Speicherfehlern (std::bad_alloc) "
-                    "1–2 Prozesse verwenden.",
+                    "die Prozesszahl reduzieren.",
                     n=max_workers,
                 ))
 
