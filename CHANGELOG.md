@@ -4,6 +4,19 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.1] – 2026-08-03
+
+### Fixed
+- **`torch.compile`-Absturz bei jeder Datei unter Windows ohne C++-Compiler.**
+  Docling versucht standardmäßig, seine Torch-Modelle beim ersten Aufruf per
+  `torch.compile()` zu kompilieren (`InvalidCxxCompiler: Compiler: cl is not
+  found`, wenn die Visual Studio Build Tools fehlen — der Normalfall). Der
+  Fehlschlag landete als „Teilkonvertierung“ im Fehlerprotokoll und löste
+  zusätzlich den (ebenfalls scheiternden) reduzierten Wiederholungsversuch
+  aus — pro betroffener Datei doppelt verschenkte Zeit. `build_converter()`
+  schaltet die Kompilierung jetzt global ab; ohne installierte C++-Toolchain
+  bringt sie ohnehin nichts.
+
 ## [1.7.0] – 2026-08-03
 
 ### Changed

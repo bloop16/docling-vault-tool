@@ -425,7 +425,21 @@ def build_converter(
 
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.settings import settings as _docling_settings
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    # Docling kompiliert seine Torch-Modelle standardmaessig per
+    # torch.compile() (settings.inference.compile_torch_models=True).
+    # Auf Windows braucht Inductors Standard-Backend dafuer einen
+    # installierten C++-Compiler (cl.exe aus den Visual Studio Build
+    # Tools) -- fehlt der (der Normalfall ohne separate Installation),
+    # schlaegt der Kompilierversuch beim allerersten Layout-Aufruf JEDER
+    # Datei mit "InvalidCxxCompiler" fehl. Das faengt unser Code zwar ab,
+    # loest aber unnoetig den teuren reduzierten Wiederholungsversuch aus
+    # (der denselben Fehler nochmal produziert) und kostet damit doppelt
+    # Zeit. Ohne funktionierende C++-Toolchain bringt die Kompilierung
+    # ohnehin nichts -- global abschalten ist der robuste Default.
+    _docling_settings.inference.compile_torch_models = False
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = config.do_ocr
