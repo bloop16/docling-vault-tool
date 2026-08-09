@@ -594,3 +594,15 @@ def test_memory_diagnostics_and_warning():
     }) is None
     # Unbekannte Werte: keine Falschwarnung.
     assert dw.memory_warning({"python_bits": 64}) is None
+
+
+def test_effective_available_gb_uses_commit_limit():
+    """Realfall: 34,5 GB RAM frei, 0,6 GB Commit -- massgeblich ist der
+    kleinere Wert, der Default faellt damit auf 1 Prozess."""
+    assert dw.effective_available_gb(
+        {"ram_avail_gb": 34.5, "commit_avail_gb": 0.6}) == 0.6
+    assert dw.effective_available_gb(
+        {"ram_avail_gb": 34.5, "commit_avail_gb": None}) == 34.5
+    assert dw.effective_available_gb(
+        {"ram_avail_gb": None, "commit_avail_gb": None}) is None
+    assert dw.default_max_workers(16, available_gb=0.6) == 1

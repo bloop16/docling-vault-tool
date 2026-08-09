@@ -534,7 +534,9 @@ with tab_settings:
     with col_left:
         _overline(_("Verarbeitung"))
         cpu_count = os.cpu_count() or 2
-        _avail_gb = dw.available_ram_gb()
+        # min(freier RAM, freier Commit): massgeblich fuer bad_alloc ist
+        # der kleinere Wert (Realfall: Auslagerungsdatei deaktiviert).
+        _avail_gb = dw.effective_available_gb()
         max_workers = st.slider(
             _("Parallele Prozesse"),
             min_value=1,

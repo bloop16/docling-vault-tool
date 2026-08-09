@@ -208,14 +208,28 @@ def ram_capped_workers(available_gb: float | None) -> int | None:
     return max(1, int(available_gb // WORKER_RAM_GB))
 
 
+def effective_available_gb(diags: dict | None = None) -> float | None:
+    """Tatsaechlich nutzbarer Speicher: min(freier RAM, freier Commit).
+
+    Realbetrieb: 34,5 GB RAM frei, aber nur 0,6 GB Commit
+    (Auslagerungsdatei aus) -- massgeblich fuer bad_alloc ist der
+    KLEINERE der beiden Werte, nicht der physische RAM allein.
+    """
+    d = diags if diags is not None else memory_diagnostics()
+    values = [v for v in (d.get("ram_avail_gb"), d.get("commit_avail_gb"))
+              if v is not None]
+    return min(values) if values else None
+
+
 def default_max_workers(
     cpu_count: int | None = None, available_gb: float | None = None
 ) -> int:
     """Sinnvolle Standard-Prozesszahl fuer die Parallelkonvertierung.
 
     Ein Kern bleibt fuer OS/Dashboard frei, Default auf 8 gedeckelt.
-    Zusaetzlich zaehlt der freie RAM: jeder Worker laedt einen eigenen
-    Modellstapel (~4 GB mit OCR) -- auf knappen Maschinen wuerde ein rein
+    Zusaetzlich zaehlt der nutzbare Speicher (min aus freiem RAM und
+    freiem Commit): jeder Worker laedt einen eigenen Modellstapel
+    (~4 GB mit OCR) -- auf knappen Maschinen wuerde ein rein
     kernbasierter Default sonst direkt in std::bad_alloc laufen
     (Realbetrieb: selbst 12-MiB-Allokationen scheiterten). Die Obergrenze
     fuer die Nutzerauswahl (Regler/CLI) bleibt Kernzahl-1: wer es besser
@@ -224,7 +238,7 @@ def default_max_workers(
     n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
     result = max(1, min(8, n - 1))
     ram_cap = ram_capped_workers(
-        available_gb if available_gb is not None else available_ram_gb()
+        available_gb if available_gb is not None else effective_available_gb()
     )
     if ram_cap is not None:
         result = min(result, ram_cap)
@@ -2119,12 +2133,13 @@ def _run_cli(argv: list[str] | None = None) -> int:
         print(f"  HINWEIS: OCR mit {args.workers} parallelen Prozessen "
               "braucht viel RAM (je Prozess ein eigener Modellstapel). "
               "Bei Speicherfehlern (std::bad_alloc) -w 1 oder -w 2 nutzen.")
-    _avail = available_ram_gb()
+    _avail = effective_available_gb()
     _cap = ram_capped_workers(_avail)
     if _cap is not None and args.workers > _cap:
-        print(f"  WARNUNG: nur {_avail:.1f} GB RAM frei -- {args.workers} "
-              f"parallele Prozesse fuehren sehr wahrscheinlich zu "
-              f"Speicherfehlern. Empfehlung: -w {_cap}.")
+        print(f"  WARNUNG: nur {_avail:.1f} GB nutzbarer Speicher frei "
+              f"(min aus RAM und Commit) -- {args.workers} parallele "
+              f"Prozesse fuehren sehr wahrscheinlich zu Speicherfehlern. "
+              f"Empfehlung: -w {_cap}.")
     _mem_warn = memory_warning()
     if _mem_warn:
         print("  WARNUNG: " + _mem_warn[0].format(**_mem_warn[1]))
