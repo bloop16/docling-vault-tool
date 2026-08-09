@@ -584,6 +584,7 @@ def test_memory_diagnostics_and_warning():
     # Commit knapp (2 GB) trotz 60 GB freiem RAM: Auslagerungsdatei-Warnung.
     warn = dw.memory_warning({
         "python_bits": 64, "ram_avail_gb": 60.0, "commit_avail_gb": 2.0,
+        "commit_hard": True,
     })
     assert warn is not None
     assert "Auslagerungsdatei" in warn[0]
@@ -591,6 +592,7 @@ def test_memory_diagnostics_and_warning():
     # Gesunde Maschine: keine Warnung.
     assert dw.memory_warning({
         "python_bits": 64, "ram_avail_gb": 60.0, "commit_avail_gb": 80.0,
+        "commit_hard": True,
     }) is None
     # Unbekannte Werte: keine Falschwarnung.
     assert dw.memory_warning({"python_bits": 64}) is None
@@ -600,9 +602,43 @@ def test_effective_available_gb_uses_commit_limit():
     """Realfall: 34,5 GB RAM frei, 0,6 GB Commit -- massgeblich ist der
     kleinere Wert, der Default faellt damit auf 1 Prozess."""
     assert dw.effective_available_gb(
-        {"ram_avail_gb": 34.5, "commit_avail_gb": 0.6}) == 0.6
+        {"ram_avail_gb": 34.5, "commit_avail_gb": 0.6,
+         "commit_hard": True}) == 0.6
+    # Linux (Overcommit): Commit ist nicht hart und deckelt nicht.
+    assert dw.effective_available_gb(
+        {"ram_avail_gb": 34.5, "commit_avail_gb": 0.6}) == 34.5
     assert dw.effective_available_gb(
         {"ram_avail_gb": 34.5, "commit_avail_gb": None}) == 34.5
     assert dw.effective_available_gb(
         {"ram_avail_gb": None, "commit_avail_gb": None}) is None
     assert dw.default_max_workers(16, available_gb=0.6) == 1
+
+
+def test_commit_capped_and_recommended_workers():
+    """Commit-Deckel greift ohne Auslagerungsdatei UND bei fest zu kleiner
+    Auslagerungsdatei (Commit frei < RAM frei); sonst gilt die RAM-Regel."""
+    # Realfall: 34,1 GB Commit, 43,5 GB RAM -> (34,1-4)//8 = 3 Worker.
+    d = {"python_bits": 64, "ram_avail_gb": 43.5,
+         "commit_avail_gb": 34.1, "pagefile_missing": False,
+         "commit_hard": True}
+    assert dw.commit_capped_workers(d) == 3
+    assert dw.recommended_workers(16, d) == 3
+    # Ohne Auslagerungsdatei auch bei kleinem RAM-Vorsprung.
+    assert dw.commit_capped_workers({
+        "ram_avail_gb": 10.0, "commit_avail_gb": 20.0,
+        "pagefile_missing": True, "commit_hard": True}) == 2
+    # Gesundes Windows (Commit frei > RAM frei, Pagefile auto): kein Deckel.
+    assert dw.commit_capped_workers({
+        "ram_avail_gb": 20.0, "commit_avail_gb": 60.0,
+        "pagefile_missing": False, "commit_hard": True}) is None
+    # Linux: Commit nie hart -> nie ein Deckel, auch bei knappem Commit.
+    assert dw.commit_capped_workers({
+        "ram_avail_gb": 43.5, "commit_avail_gb": 2.0,
+        "pagefile_missing": False}) is None
+    assert dw.recommended_workers(16, {
+        "ram_avail_gb": 20.0, "commit_avail_gb": 60.0,
+        "pagefile_missing": False, "commit_hard": True}) == 5   # RAM-Regel: 20//4
+    # Nie unter 1.
+    assert dw.commit_capped_workers({
+        "ram_avail_gb": 43.5, "commit_avail_gb": 2.0,
+        "pagefile_missing": False, "commit_hard": True}) == 1
