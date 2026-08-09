@@ -233,6 +233,36 @@ def _mute_torch_pin_memory_warning() -> None:
     )
 
 
+def _watch_parent(sentinel, _exit=os._exit) -> None:
+    """Blockiert bis der Elternprozess endet, dann Sofort-Exit des Workers.
+
+    Auf Windows ueberleben Kindprozesse das Beenden des Elternprozesses
+    (Ctrl+C, Fenster zu, Absturz) als Waisen -- mit je 2-3 GB geladener
+    Modelle. Solche Waisen fressen den RAM aller Folgelaeufe auf
+    (bad_alloc-Kaskaden). os._exit statt sys.exit: kein Aufraeumcode,
+    der selbst haengen koennte."""
+    from multiprocessing.connection import wait as _mp_wait
+
+    _mp_wait([sentinel])
+    _exit(1)
+
+
+def _exit_when_parent_dies() -> None:
+    """Startet den Eltern-Waechter als Daemon-Thread (best effort)."""
+    try:
+        import multiprocessing as mp
+        import threading
+
+        parent = mp.parent_process()
+        if parent is None:
+            return
+        threading.Thread(
+            target=_watch_parent, args=(parent.sentinel,), daemon=True
+        ).start()
+    except Exception:  # noqa: BLE001 -- niemals lauffaehigkeitskritisch
+        pass
+
+
 def _mute_worker_progress_bars() -> None:
     """Fortschrittsbalken ("Loading weights: 100%|...") sind in parallelen
     Worker-Prozessen nur Log-Rauschen -- pro Worker eine volle tqdm-Zeile."""
@@ -1312,9 +1342,20 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     _mute_streamlit_bare_mode_warning()
     _mute_torch_pin_memory_warning()
     _mute_worker_progress_bars()
+    _exit_when_parent_dies()
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
+    # Speicher-Hebel: Docling haelt standardmaessig 4 Seiten gleichzeitig
+    # im RAM (Batch). Eine Seite je Batch senkt den Spitzenverbrauch pro
+    # Worker massiv -- der Hauptausloeser der seitenweisen bad_allocs auf
+    # Maschinen mit knappem RAM (kostet nur wenig Durchsatz).
+    try:
+        from docling.datamodel.settings import settings as _dl_settings
+
+        _dl_settings.perf.page_batch_size = 1
+    except Exception:  # noqa: BLE001 -- aeltere Docling-Versionen
+        pass
     _WORKER_CONVERTER = build_converter(config)
     # Alle Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
     _WORKER_CONVERTER_REDUCED = None

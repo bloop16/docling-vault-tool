@@ -4,6 +4,15 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.2] – 2026-08-03
+
+### Fixed
+- **Waisen-Prozesse beim Beenden (Windows)**: Worker überleben das Ende
+  der Anwendung nicht mehr — jeder Worker überwacht den Elternprozess
+  (Sentinel) und beendet sich sofort selbst, wenn dieser stirbt (Ctrl+C,
+  Fenster zu, Absturz). Zurückbleibende Waisen mit je 2–3 GB geladener
+  Modelle waren die wahrscheinliche Ursache der bad_alloc-Kaskaden in
+  Folgeläufen.
 ## [1.7.1] – 2026-08-03
 
 ### Fixed

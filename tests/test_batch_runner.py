@@ -214,3 +214,23 @@ def test_abort_terminates_running_workers_quickly(tmp_path, monkeypatch):
             progress=_progress,
         )
     assert time.perf_counter() - t0 < 20, "Abbruch darf nicht auf den 120s-Schlaefer warten"
+
+
+def test_watch_parent_exits_when_sentinel_closes():
+    """Eltern-Waechter: Worker beendet sich, sobald der Elternprozess endet
+    (verhindert Waisen-Prozesse mit geladenen Modellen auf Windows)."""
+    import multiprocessing as mp
+    import threading
+
+    recv, send = mp.Pipe(duplex=False)
+    exited = threading.Event()
+    t = threading.Thread(
+        target=dw._watch_parent,
+        args=(recv, lambda code: exited.set()),
+        daemon=True,
+    )
+    t.start()
+    assert not exited.wait(0.2)     # Elternprozess "lebt" noch
+    send.close()                     # Elternprozess "stirbt"
+    assert exited.wait(5), "Waechter hat das Eltern-Ende nicht bemerkt"
+    recv.close()
