@@ -52,6 +52,9 @@ def used_keys() -> set[str]:
 
     for _keywords, _category, hint in dw._ERROR_RULES:
         keys.add(hint)
+    # Speicher-Warnvorlagen (erreichen tr() als Variable).
+    keys.add(dw._WARN_32BIT)
+    keys.add(dw._WARN_COMMIT)
     return keys
 
 

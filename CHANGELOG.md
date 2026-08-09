@@ -4,6 +4,18 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.6] – 2026-08-09
+
+### Added
+- **Diagnose für Speicherfehler trotz freiem RAM.** Realbetrieb: massen-
+  hafte `std::bad_alloc` bei 63 GB freiem RAM — dann limitiert nicht der
+  physische Speicher, sondern ein Pro-Prozess-Limit (32-Bit-Python:
+  ~2 GB Adressraum) oder das Windows-Commit-Limit (Auslagerungsdatei
+  deaktiviert/zu klein), beides im Task-Manager unsichtbar. doc2vault
+  erkennt jetzt beide Fälle: deutliche Warnung in den Einstellungen und
+  auf der CLI, und am Anfang jedes Laufs eine Umgebungszeile im Log
+  (Python-Bitbreite, freier RAM, freier Commit, freier Adressraum).
+
 ## [1.7.5] – 2026-08-09
 
 ### Added

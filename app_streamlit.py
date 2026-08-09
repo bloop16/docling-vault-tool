@@ -562,6 +562,11 @@ with tab_settings:
                 "(std::bad_alloc). Empfehlung: auf {rec} reduzieren.",
                 n=max_workers, gb=f"{_avail_gb:.1f}", rec=_ram_cap,
             ), icon="⚠️")
+        # Pro-Prozess-Limits (32-Bit-Python, Commit-Limit) erzeugen
+        # Speicherfehler TROTZ freiem RAM -- deutlich warnen.
+        _mem_warn = dw.memory_warning()
+        if _mem_warn:
+            st.error(_(_mem_warn[0], **_mem_warn[1]), icon="🚨")
 
         _overline(_("Docling-Funktionen"))
         extract_images = st.toggle(
