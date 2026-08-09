@@ -500,6 +500,26 @@ den Einstellungen eine deutliche Warnung, und am Anfang jedes Laufs steht
 eine Umgebungszeile im Log (`Umgebung: Python 64-Bit | RAM frei … |
 Commit frei … | Adressraum frei …`), an der die Ursache ablesbar ist.
 
+**Wiederkehrende `std::bad_alloc`-Ketten bei langen/seitenreichen PDFs —
+die eigentliche Ursache (behoben in v1.9.0):** Recherche in den
+Docling-eigenen GitHub-Issues (
+[docling-project/docling#2077](https://github.com/docling-project/docling/issues/2077),
+[#3671](https://github.com/docling-project/docling/issues/3671)) zeigt,
+dass Doclings **Standard-PDF-Parser** (`docling-parse`, intern
+DLPARSE_V4) bei langen Dokumenten **unbegrenzt Speicher anhäuft** — ein
+4500-seitiges Testdokument wuchs auf über 20 GB, während der alternative
+`pypdfium`-Parser bei ~4 GB konstant blieb. Das war die tatsächliche
+Ursache der wiederkehrenden Fehlerketten, kein reines RAM-Problem — die
+vorherigen Anpassungen (Prozesszahl, Commit-Wache) haben nur das Symptom
+abgefedert. Seit v1.9.0 verwendet doc2vault **pypdfium als primären
+Parser** (nicht mehr nur als Notnagel nach einem Absturz); der klassische
+`docling-parse`-Parser springt nur noch in den seltenen Fällen ein, in
+denen pypdfium eine Datei ablehnt. Erkennbar am Log-Marker
+`[docling-parse]` bzw. der Meldung „… über den klassischen
+docling-parse-Parser konvertiert" im Dashboard — taucht das bei einer
+Datei auf, ist genau diese Datei der eine verbleibende Sonderfall, nicht
+mehr der Normalfall.
+
 **„cloud-platzhalter" / `unexpected EOF, expected N more bytes`:**
 Die Quelldatei liegt in OneDrive nur als Platzhalter vor („Dateien bei
 Bedarf") und ist lokal unvollständig. doc2vault liest jede Datei vor der

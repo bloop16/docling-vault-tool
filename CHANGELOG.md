@@ -4,6 +4,34 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.9.0] – 2026-08-09
+
+### Fixed
+- **Root-Cause-Fix für die wiederkehrenden `std::bad_alloc`-Ketten bei
+  langen PDFs.** Bisherige Anpassungen (Prozesszahl, Speicher-Wache)
+  haben nur das Symptom abgefedert. Recherche in Doclings eigenen
+  GitHub-Issues ([#2077](https://github.com/docling-project/docling/issues/2077),
+  [#3671](https://github.com/docling-project/docling/issues/3671))
+  zeigt die tatsächliche Ursache: Doclings Standard-PDF-Parser
+  (`docling-parse`, DLPARSE_V4) häuft bei langen/seitenreichen
+  Dokumenten **unbegrenzt Speicher** an — ein 4500-seitiges Testdokument
+  wuchs auf über 20 GB, während der alternative `pypdfium`-Parser bei
+  konstant ~4 GB blieb. doc2vault nutzte pypdfium bisher nur als
+  Notnagel nach einem Absturz; ab sofort ist er der **primäre Parser**
+  für alle PDFs. Der klassische Parser springt nur noch ein, wenn
+  pypdfium eine Datei ablehnt (Log-Marker `[docling-parse]`).
+- **Thread-Überzeichnung pro Worker begrenzt.** Jeder Worker-Prozess
+  lud bisher Doclings Standardwert von 4 CPU-Threads — bei mehreren
+  parallelen Prozessen vervielfacht sich das ungebremst
+  (`max_workers × 4` Threads, jeder mit eigenem Speicherbereich für
+  OMP/MKL). Auf 2 Threads je Prozess gedeckelt, da die eigentliche
+  Parallelität ohnehin über die Prozesszahl läuft
+  (docling-project/docling#3099: „mehr Threads = mehr Speicher").
+- Mit dem stabileren Speicherverhalten des primären Parsers sollte die
+  adaptive Drosselung aus v1.8.x jetzt deutlich seltener greifen und
+  echte Rechenleistung/RAM voller genutzt werden können, statt vorsorglich
+  gedrosselt zu werden.
+
 ## [1.8.2] – 2026-08-09
 
 ### Fixed

@@ -424,7 +424,8 @@ class ConversionResult:
     # True, wenn mit speicherschonenden Einstellungen konvertiert wurde
     # (Riesenseiten-Erkennung oder automatischer Wiederholungsversuch).
     reduced_mode: bool = False
-    # "pypdfium", wenn erst der alternative PDF-Parser die Datei laden konnte.
+    # "docling-parse", wenn erst der klassische Fallback-Parser die Datei
+    # laden konnte (Standard ist pypdfium, siehe build_converter-Docstring).
     pdf_backend: str | None = None
     # Konvertierung ok, aber Archivieren/Loeschen des Originals schlug fehl.
     post_action_error: str | None = None
@@ -696,6 +697,15 @@ def check_paths(
     return None
 
 
+# Docling laedt standardmaessig 4 CPU-Threads pro Converter/Prozess
+# (AcceleratorOptions.num_threads). doc2vault parallelisiert bereits ueber
+# separate Worker-PROZESSE -- ohne Deckel multipliziert sich das zu
+# max_workers * 4 Threads, jeder mit eigenen OMP/MKL-Speicherbereichen
+# ("mehr Threads = mehr Speicher", docling-project/docling#3099). Niedrig
+# gehalten, weil die eigentliche Parallelitaet ueber die Prozesszahl laeuft.
+WORKER_NUM_THREADS = 2
+
+
 def build_converter(
     config: ConverterConfig | None = None,
     pdf_backend: str | None = None,
@@ -706,9 +716,17 @@ def build_converter(
     auch ohne installiertes Docling importierbar bleibt -- z. B. fuer
     ``discover_files`` oder die Unit-Tests der Pfadlogik.
 
-    ``pdf_backend="pypdfium"`` verwendet den alternativen pypdfium-Parser
-    statt docling-parse -- Fallback fuer PDFs, die docling-parse mit
-    "Inconsistent number of pages"/"not valid" ablehnt.
+    ``pdf_backend="pypdfium"`` verwendet den pypdfium-Parser statt Doclings
+    eigenem ``docling-parse`` (Standard bei ``pdf_backend=None``).
+
+    Rechercheergebnis (docling-project/docling#2077, #3671; Aug. 2026): der
+    Standardparser DLPARSE_V4 haeuft bei langen/seitenreichen Dokumenten
+    Speicher unbegrenzt an (Praxisbeispiel: 4500 Seiten -> 20+ GB, versus
+    konstant ~4 GB mit pypdfium2) -- das ist die tatsaechliche Ursache
+    wiederkehrender ``std::bad_alloc``-Ketten bei grossen PDFs, kein reines
+    Kapazitaetsproblem. doc2vault nutzt pypdfium deshalb als PRIMAEREN
+    Parser (siehe ``init_worker``); ``docling-parse`` bleibt als Fallback
+    fuer die seltenen Faelle, in denen pypdfium eine Datei ablehnt.
     """
     if config is None:
         config = ConverterConfig()
@@ -743,6 +761,12 @@ def build_converter(
     if config.do_table_structure:
         # Zellen-Matching verbessert die Tabellenrekonstruktion.
         pipeline_options.table_structure_options.do_cell_matching = True
+
+    from docling.datamodel.pipeline_options import AcceleratorOptions
+
+    pipeline_options.accelerator_options = AcceleratorOptions(
+        num_threads=WORKER_NUM_THREADS
+    )
 
     pdf_option_kwargs: dict = {"pipeline_options": pipeline_options}
     if pdf_backend == "pypdfium":
@@ -1097,10 +1121,11 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     (
         ("inconsistent number of pages", "conversion failed for"),
         "pdf-parser",
-        "Der Standard-PDF-Parser (docling-parse) konnte das Dokument nicht "
+        "Der Standard-PDF-Parser (pypdfium) konnte das Dokument nicht "
         "laden. doc2vault versucht solche PDFs automatisch erneut mit dem "
-        "alternativen pypdfium-Parser – schlägt auch das fehl, ist die Datei "
-        "vermutlich beschädigt oder verwendet ein exotisches PDF-Format.",
+        "klassischen docling-parse-Parser – schlägt auch das fehl, ist die "
+        "Datei vermutlich beschädigt oder verwendet ein exotisches "
+        "PDF-Format.",
     ),
     (
         ("terminated abruptly", "brokenprocesspool", "prozess abgestürzt"),
@@ -1585,11 +1610,13 @@ def convert_single_file(
 
 _WORKER_CONVERTER = None
 _WORKER_CONVERTER_REDUCED = None
-# pypdfium-Fallback getrennt fuer Voll- und reduzierte Konfiguration: ein
-# gemeinsamer Cache wuerde je nach erstem Ausloeser entweder Bilder still
-# weglassen oder Riesenseiten wieder mit voller Skalierung rendern.
-_WORKER_CONVERTER_PDFIUM = None
-_WORKER_CONVERTER_PDFIUM_REDUCED = None
+# docling-parse-Fallback (Doclings Standardparser) getrennt fuer Voll- und
+# reduzierte Konfiguration: ein gemeinsamer Cache wuerde je nach erstem
+# Ausloeser entweder Bilder still weglassen oder Riesenseiten wieder mit
+# voller Skalierung rendern. Nur fuer den seltenen Fall, dass der
+# primaere pypdfium-Parser eine Datei ablehnt (siehe build_converter).
+_WORKER_CONVERTER_DOCLING_PARSE = None
+_WORKER_CONVERTER_DOCLING_PARSE_REDUCED = None
 _WORKER_CONFIG: ConverterConfig | None = None
 _WORKER_OUTPUT: Path | None = None
 _WORKER_ROOT: Path | None = None
@@ -1598,7 +1625,7 @@ _WORKER_ROOT: Path | None = None
 def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> None:
     """Initialisiert einen Worker-Prozess (baut den Converter einmalig)."""
     global _WORKER_CONVERTER, _WORKER_CONVERTER_REDUCED
-    global _WORKER_CONVERTER_PDFIUM, _WORKER_CONVERTER_PDFIUM_REDUCED
+    global _WORKER_CONVERTER_DOCLING_PARSE, _WORKER_CONVERTER_DOCLING_PARSE_REDUCED
     global _WORKER_CONFIG, _WORKER_OUTPUT, _WORKER_ROOT
     _mute_streamlit_bare_mode_warning()
     _mute_torch_pin_memory_warning()
@@ -1618,11 +1645,14 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
         _dl_settings.perf.page_batch_size = 1
     except Exception:  # noqa: BLE001 -- aeltere Docling-Versionen
         pass
-    _WORKER_CONVERTER = build_converter(config)
+    # pypdfium ist der primaere Parser (siehe build_converter-Docstring):
+    # DLPARSE_V4, Doclings eigener Standard, haeuft bei langen Dokumenten
+    # unbegrenzt Speicher an -- die Hauptursache der bad_alloc-Ketten.
+    _WORKER_CONVERTER = build_converter(config, pdf_backend="pypdfium")
     # Alle Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
     _WORKER_CONVERTER_REDUCED = None
-    _WORKER_CONVERTER_PDFIUM = None
-    _WORKER_CONVERTER_PDFIUM_REDUCED = None
+    _WORKER_CONVERTER_DOCLING_PARSE = None
+    _WORKER_CONVERTER_DOCLING_PARSE_REDUCED = None
 
 
 def convert_file_task(source_path: str) -> ConversionResult:
@@ -1651,7 +1681,9 @@ def convert_file_task(source_path: str) -> ConversionResult:
         and has_huge_pages(source_path)
     ):
         if _WORKER_CONVERTER_REDUCED is None:
-            _WORKER_CONVERTER_REDUCED = build_converter(_reduced_config(config))
+            _WORKER_CONVERTER_REDUCED = build_converter(
+                _reduced_config(config), pdf_backend="pypdfium"
+            )
         converter = _WORKER_CONVERTER_REDUCED
         config = _reduced_config(config)
         reduced = True
@@ -1665,11 +1697,13 @@ def convert_file_task(source_path: str) -> ConversionResult:
     )
     result.reduced_mode = reduced or result.reduced_mode
 
-    # Fallback-Parser: docling-parse lehnt manche real existierenden PDFs mit
-    # "Inconsistent number of pages: N!=-1" / "Input document is not valid"
-    # ab (generischer ConversionError "Conversion failed for: ..."). pypdfium
-    # laedt dieselben Dateien meist problemlos -> einmaliger zweiter Versuch.
-    global _WORKER_CONVERTER_PDFIUM, _WORKER_CONVERTER_PDFIUM_REDUCED
+    # Fallback-Parser: der primaere pypdfium-Parser lehnt sehr vereinzelt
+    # PDFs ab, die Doclings eigener Standardparser (docling-parse) doch laden
+    # kann (generischer ConversionError "Conversion failed for: ..."). Nur
+    # dieser Rettungsversuch nutzt noch docling-parse -- bewusst als
+    # Ausnahme, nicht als Standard (siehe build_converter-Docstring zum
+    # Speicherverhalten von DLPARSE_V4 bei langen Dokumenten).
+    global _WORKER_CONVERTER_DOCLING_PARSE, _WORKER_CONVERTER_DOCLING_PARSE_REDUCED
     if (
         not result.success
         and source_path.lower().endswith(".pdf")
@@ -1679,17 +1713,13 @@ def convert_file_task(source_path: str) -> ConversionResult:
             # Cache passend zur effektiven Config waehlen: `config` ist an
             # dieser Stelle bereits die ggf. reduzierte Variante.
             if _is_reduced(config):
-                if _WORKER_CONVERTER_PDFIUM_REDUCED is None:
-                    _WORKER_CONVERTER_PDFIUM_REDUCED = build_converter(
-                        config, pdf_backend="pypdfium"
-                    )
-                fallback_converter = _WORKER_CONVERTER_PDFIUM_REDUCED
+                if _WORKER_CONVERTER_DOCLING_PARSE_REDUCED is None:
+                    _WORKER_CONVERTER_DOCLING_PARSE_REDUCED = build_converter(config)
+                fallback_converter = _WORKER_CONVERTER_DOCLING_PARSE_REDUCED
             else:
-                if _WORKER_CONVERTER_PDFIUM is None:
-                    _WORKER_CONVERTER_PDFIUM = build_converter(
-                        config, pdf_backend="pypdfium"
-                    )
-                fallback_converter = _WORKER_CONVERTER_PDFIUM
+                if _WORKER_CONVERTER_DOCLING_PARSE is None:
+                    _WORKER_CONVERTER_DOCLING_PARSE = build_converter(config)
+                fallback_converter = _WORKER_CONVERTER_DOCLING_PARSE
             retry = convert_single_file(
                 source_path,
                 _WORKER_OUTPUT,
@@ -1701,7 +1731,7 @@ def convert_file_task(source_path: str) -> ConversionResult:
             retry = None
         if retry is not None and retry.success:
             retry.reduced_mode = result.reduced_mode
-            retry.pdf_backend = "pypdfium"
+            retry.pdf_backend = "docling-parse"
             result = retry
     result.num_pages = pages
     _write_worker_status({"file": None})   # Worker wieder frei
@@ -2335,7 +2365,7 @@ def _run_cli(argv: list[str] | None = None) -> int:
         eta = (total_n - done) / rate if rate else 0
         marker = "  [reduziert]" if res.reduced_mode else ""
         if res.pdf_backend:
-            marker += "  [pypdfium]"
+            marker += "  [docling-parse]"
         print(
             f"[{done}/{total_n}] ok={ok} fehler={len(failed)} "
             f"ETA={eta:6.0f}s  {Path(res.source_path).name}{marker}",

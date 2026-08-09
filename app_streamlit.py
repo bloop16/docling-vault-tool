@@ -1006,7 +1006,7 @@ with tab_convert:
         st.button(_("Konvertierung abbrechen"), key="cancel_run")
 
         stats = {"done": 0, "ok": 0, "moved": 0, "images": 0,
-                 "reduced": 0, "pdfium": 0,
+                 "reduced": 0, "docling_parse_fallback": 0,
                  "page_time": 0.0, "page_count": 0}
         failures: list = []
         start_time = time.perf_counter()
@@ -1021,7 +1021,7 @@ with tab_convert:
                 if getattr(res, "reduced_mode", False):
                     stats["reduced"] += 1
                 if getattr(res, "pdf_backend", None):
-                    stats["pdfium"] += 1
+                    stats["docling_parse_fallback"] += 1
             else:
                 failures.append(res)
             # Sekunden-pro-Seite lernen (Basis der Je-Datei-Schaetzung).
@@ -1094,7 +1094,7 @@ with tab_convert:
             "images": stats["images"],
             "moved": stats["moved"],
             "reduced": stats["reduced"],
-            "pdfium": stats["pdfium"],
+            "docling_parse_fallback": stats["docling_parse_fallback"],
             "on_success": on_success,
             "failures": failures,
         }
@@ -1145,11 +1145,11 @@ with tab_convert:
                 "ohne Bildextraktion).",
                 n=last["reduced"],
             ))
-        if last.get("pdfium"):
+        if last.get("docling_parse_fallback"):
             st.caption(_(
-                "{n} PDF(s) über den alternativen pypdfium-Parser "
-                "konvertiert (Standard-Parser lehnte die Datei ab).",
-                n=last["pdfium"],
+                "{n} PDF(s) über den klassischen docling-parse-Parser "
+                "konvertiert (Standard-Parser pypdfium lehnte die Datei ab).",
+                n=last["docling_parse_fallback"],
             ))
         build = last.get("build")
         if build:
