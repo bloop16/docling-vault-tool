@@ -63,6 +63,25 @@ SUPPORTED_EXTENSIONS = {
 IMAGE_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
 
 
+def default_max_workers(cpu_count: int | None = None) -> int:
+    """Sinnvolle Standard-Prozesszahl fuer die Parallelkonvertierung.
+
+    Ein Kern bleibt fuer OS/Dashboard frei. Als Default bewusst auf 8
+    gedeckelt -- ein sicherer Ausgangswert unabhaengig von Kernzahl und
+    verfuegbarem RAM. Die Obergrenze fuer die Nutzerauswahl (Dashboard-
+    Regler, CLI ``--workers``) ist davon unabhaengig und geht bis
+    Kernzahl-1: wer genug RAM/Kerne hat, kann bewusst hoeher gehen.
+    """
+    n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
+    return max(1, min(8, n - 1))
+
+
+def max_selectable_workers(cpu_count: int | None = None) -> int:
+    """Obergrenze fuer die Prozesszahl-Auswahl (Dashboard-Regler etc.)."""
+    n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
+    return max(1, n - 1)
+
+
 def hash_file(path: os.PathLike | str, chunk: int = 1 << 20) -> str:
     """SHA-256 ueber den Dateiinhalt (gestreamt)."""
     import hashlib
@@ -436,7 +455,21 @@ def build_converter(
 
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.settings import settings as _docling_settings
     from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    # Docling kompiliert seine Torch-Modelle standardmaessig per
+    # torch.compile() (settings.inference.compile_torch_models=True).
+    # Auf Windows braucht Inductors Standard-Backend dafuer einen
+    # installierten C++-Compiler (cl.exe aus den Visual Studio Build
+    # Tools) -- fehlt der (der Normalfall ohne separate Installation),
+    # schlaegt der Kompilierversuch beim allerersten Layout-Aufruf JEDER
+    # Datei mit "InvalidCxxCompiler" fehl. Das faengt unser Code zwar ab,
+    # loest aber unnoetig den teuren reduzierten Wiederholungsversuch aus
+    # (der denselben Fehler nochmal produziert) und kostet damit doppelt
+    # Zeit. Ohne funktionierende C++-Toolchain bringt die Kompilierung
+    # ohnehin nichts -- global abschalten ist der robuste Default.
+    _docling_settings.inference.compile_torch_models = False
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = config.do_ocr
@@ -1624,9 +1657,10 @@ def _run_cli(argv: list[str] | None = None) -> int:
         "--workers",
         "-w",
         type=int,
-        default=max(1, min(3, (os.cpu_count() or 2) - 1)),
-        help="Anzahl paralleler Prozesse (Default: max. 3 -- Docling ist "
-        "speicherintensiv; hoehere Werte explizit angeben)",
+        default=default_max_workers(),
+        help="Anzahl paralleler Prozesse (Default: min(8, Kerne-1) -- "
+        "Docling ist speicherintensiv; bei ausreichend RAM/Kernen hoehere "
+        "Werte explizit angeben)",
     )
     parser.add_argument(
         "--ocr",
