@@ -43,6 +43,8 @@ import vault_index as vi
 from i18n import LANGUAGES
 from i18n import tr as _
 
+_LOG_PATH = jm.setup_logging()
+
 st.set_page_config(
     page_title="doc2vault",
     page_icon="🗂",
@@ -680,6 +682,10 @@ with tab_settings:
             st.session_state["archive_dir"] = archive_dir
         elif on_success == "delete":
             st.warning(_("Originale werden nach Erfolg unwiderruflich gelöscht."))
+
+        _overline(_("Logdatei"))
+        st.caption(_("Fehler und Läufe werden protokolliert in: {path}",
+                     path=str(_LOG_PATH)))
 
         _overline(_("Sprache"))
         st.caption(_(

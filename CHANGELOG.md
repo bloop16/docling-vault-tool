@@ -4,6 +4,18 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.3] – 2026-08-09
+
+### Added
+- **Persistentes Datei-Log**: Fehler und Batch-Zusammenfassungen werden
+  jetzt dauerhaft in `<Konfig-Verzeichnis>/logs/doc2vault.log`
+  protokolliert (rotierend, 2 MB × 3 Dateien) — unter Windows
+  `%APPDATA%\doc2vault\logs\`, unter Linux `~/.config/doc2vault/logs/`
+  bzw. `$DOC2VAULT_HOME/logs/`. Bisher gingen Fehlermeldungen verloren,
+  sobald das Dashboard geschlossen wurde oder abstürzte. Der Pfad zur
+  Logdatei wird im Einstellungen-Tab angezeigt; CLI-Läufe (`doc2vault`)
+  loggen in dieselbe Datei.
+
 ## [1.7.2] – 2026-08-03
 
 ### Fixed

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -304,6 +305,8 @@ _mute_torch_pin_memory_warning()
 # Seitenflaeche in PDF-Punkten, ab der eine Seite als "riesig" gilt
 # (~A1 und groesser; CAD-Zeichnungen). Solche Seiten sprengen beim Rendern
 # mit voller Bildskalierung den Speicher (std::bad_alloc im Preprocess).
+_LOG = logging.getLogger("doc2vault.worker")
+
 HUGE_PAGE_AREA_PT2 = 2_500_000
 
 
@@ -1537,6 +1540,9 @@ def run_conversion_batch(
         nonlocal done
         done += 1
         results.append(res)
+        if not res.success:
+            _LOG.warning("Fehlgeschlagen: %s [%s] %s", res.source_path,
+                         res.error_category, res.error)
         if progress:
             progress(done, total, res)
 
@@ -1677,6 +1683,9 @@ def run_conversion_batch(
             _emit(first_fail)
 
     shutil.rmtree(status_dir(output_dir), ignore_errors=True)
+    ok_n = sum(1 for r in results if r.success)
+    _LOG.info("Batch fertig: %d ok, %d Fehler (von %d)",
+              ok_n, len(results) - ok_n, len(results))
     return results
 
 
@@ -1819,6 +1828,12 @@ def _run_cli(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    try:
+        import job_manager as _jm
+
+        _jm.setup_logging()
+    except Exception:  # noqa: BLE001
+        pass
     output_dir = Path(normalize_user_path(args.output)).resolve()
     input_root = Path(resolve_source_dir(args.input, str(output_dir)))
     if not input_root.is_dir():
