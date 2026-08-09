@@ -69,6 +69,32 @@ IMAGE_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
 WORKER_RAM_GB = 4.0
 
 
+def _windows_memory_status():
+    """GlobalMemoryStatusEx-Struktur oder None (nur Windows)."""
+    import ctypes
+
+    class _MemStatus(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_uint32),
+            ("dwMemoryLoad", ctypes.c_uint32),
+            ("ullTotalPhys", ctypes.c_uint64),
+            ("ullAvailPhys", ctypes.c_uint64),
+            ("ullTotalPageFile", ctypes.c_uint64),
+            ("ullAvailPageFile", ctypes.c_uint64),
+            ("ullTotalVirtual", ctypes.c_uint64),
+            ("ullAvailVirtual", ctypes.c_uint64),
+            ("ullAvailExtendedVirtual", ctypes.c_uint64),
+        ]
+
+    status = _MemStatus()
+    status.dwLength = ctypes.sizeof(_MemStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(  # type: ignore[attr-defined]
+        ctypes.byref(status)
+    ):
+        return None
+    return status
+
+
 def available_ram_gb() -> float | None:
     """Aktuell freier physischer Arbeitsspeicher in GB (None = unbekannt).
 
@@ -78,34 +104,100 @@ def available_ram_gb() -> float | None:
     """
     try:
         if sys.platform.startswith("win"):
-            import ctypes
-
-            class _MemStatus(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_uint32),
-                    ("dwMemoryLoad", ctypes.c_uint32),
-                    ("ullTotalPhys", ctypes.c_uint64),
-                    ("ullAvailPhys", ctypes.c_uint64),
-                    ("ullTotalPageFile", ctypes.c_uint64),
-                    ("ullAvailPageFile", ctypes.c_uint64),
-                    ("ullTotalVirtual", ctypes.c_uint64),
-                    ("ullAvailVirtual", ctypes.c_uint64),
-                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
-                ]
-
-            status = _MemStatus()
-            status.dwLength = ctypes.sizeof(_MemStatus)
-            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(  # type: ignore[attr-defined]
-                ctypes.byref(status)
-            ):
-                return None
-            return status.ullAvailPhys / (1024 ** 3)
+            status = _windows_memory_status()
+            return None if status is None else status.ullAvailPhys / (1024 ** 3)
         if sys.platform.startswith("linux"):
             for line in Path("/proc/meminfo").read_text().splitlines():
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) / (1024 ** 2)  # kB -> GB
     except OSError:
         return None
+    return None
+
+
+# Warntexte als Modulkonstanten: exakt dieselben Strings stehen als
+# Schluessel in i18n/*.json (Orphan-Pruefung laeuft auf Quelltext-Ebene).
+_WARN_32BIT = (
+    "32-Bit-Python erkannt: Jedem Prozess stehen nur rund 2 GB Speicher zur "
+    "Verfügung, egal wie viel RAM eingebaut ist – genau das erzeugt "
+    "Speicherfehler (std::bad_alloc) trotz freiem RAM. Bitte 64-Bit-Python "
+    "installieren (python.org) und die Umgebung neu anlegen (.venv-Ordner "
+    "löschen, install_and_run erneut ausführen)."
+)
+_WARN_COMMIT = (
+    "Nur {commit} GB zusagbarer Speicher frei, obwohl {ram} GB RAM frei "
+    "sind: Die Windows-Auslagerungsdatei ist deaktiviert oder fest zu klein "
+    "eingestellt. Windows verweigert dann Allokationen (std::bad_alloc), "
+    "lange bevor der RAM voll ist – Auslagerungsdatei auf „Größe "
+    "automatisch verwalten“ stellen."
+)
+
+
+def memory_diagnostics() -> dict:
+    """Speicher-Umgebung des Prozesses: Bitbreite, RAM, Commit, Adressraum.
+
+    Hintergrund (Realbetrieb): massenhafte std::bad_alloc bei 63 GB
+    freiem RAM -- dann ist nicht der physische Speicher das Limit,
+    sondern ein Pro-Prozess-Limit (32-Bit-Adressraum) oder das
+    Windows-Commit-Limit (Auslagerungsdatei aus/zu klein). Beides ist im
+    Task-Manager unsichtbar, deshalb wird es hier explizit erhoben.
+    """
+    import struct
+
+    diags: dict = {
+        "python_bits": struct.calcsize("P") * 8,
+        "ram_total_gb": None,
+        "ram_avail_gb": None,
+        "commit_avail_gb": None,
+        "virtual_avail_gb": None,
+    }
+    gib = 1024 ** 3
+    try:
+        if sys.platform.startswith("win"):
+            status = _windows_memory_status()
+            if status is not None:
+                diags["ram_total_gb"] = status.ullTotalPhys / gib
+                diags["ram_avail_gb"] = status.ullAvailPhys / gib
+                # AvailPageFile = verbleibender Commit (RAM + Pagefile).
+                diags["commit_avail_gb"] = status.ullAvailPageFile / gib
+                # AvailVirtual = freier Adressraum DIESES Prozesses
+                # (32-Bit: < 4 GB, egal wie viel RAM da ist).
+                diags["virtual_avail_gb"] = status.ullAvailVirtual / gib
+        elif sys.platform.startswith("linux"):
+            info: dict[str, int] = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].endswith(":"):
+                    info[parts[0][:-1]] = int(parts[1])  # kB
+            if "MemTotal" in info:
+                diags["ram_total_gb"] = info["MemTotal"] / (1024 ** 2)
+            if "MemAvailable" in info:
+                diags["ram_avail_gb"] = info["MemAvailable"] / (1024 ** 2)
+            if "CommitLimit" in info and "Committed_AS" in info:
+                diags["commit_avail_gb"] = max(
+                    0, info["CommitLimit"] - info["Committed_AS"]
+                ) / (1024 ** 2)
+    except OSError:
+        pass
+    return diags
+
+
+def memory_warning(diags: dict | None = None) -> tuple[str, dict] | None:
+    """Warnung (Textvorlage, Platzhalterwerte) bei Pro-Prozess-Speicherlimits.
+
+    Erkennt die beiden Faelle, in denen Speicherfehler trotz reichlich
+    freiem RAM auftreten: 32-Bit-Python und erschoepfter Commit-Speicher.
+    """
+    d = diags if diags is not None else memory_diagnostics()
+    if d.get("python_bits") == 32:
+        return (_WARN_32BIT, {})
+    commit = d.get("commit_avail_gb")
+    ram = d.get("ram_avail_gb")
+    if (
+        commit is not None and ram is not None
+        and commit < WORKER_RAM_GB and ram >= 2 * WORKER_RAM_GB
+    ):
+        return (_WARN_COMMIT, {"commit": f"{commit:.1f}", "ram": f"{ram:.1f}"})
     return None
 
 
@@ -1589,6 +1681,20 @@ def run_conversion_batch(
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from concurrent.futures.process import BrokenProcessPool
 
+    diags = memory_diagnostics()
+    _LOG.info(
+        "Umgebung: Python %s-Bit | RAM frei %s / %s GB | Commit frei %s GB | "
+        "Adressraum frei %s GB | %d parallele Prozesse",
+        diags["python_bits"],
+        *(f"{v:.1f}" if v is not None else "?" for v in (
+            diags["ram_avail_gb"], diags["ram_total_gb"],
+            diags["commit_avail_gb"], diags["virtual_avail_gb"])),
+        max_workers,
+    )
+    mem_warn = memory_warning(diags)
+    if mem_warn:
+        _LOG.warning(mem_warn[0].format(**mem_warn[1]))
+
     remaining = [str(f) for f in files]
     total = len(remaining)
     crash_seen: dict[str, int] = {}
@@ -2019,6 +2125,9 @@ def _run_cli(argv: list[str] | None = None) -> int:
         print(f"  WARNUNG: nur {_avail:.1f} GB RAM frei -- {args.workers} "
               f"parallele Prozesse fuehren sehr wahrscheinlich zu "
               f"Speicherfehlern. Empfehlung: -w {_cap}.")
+    _mem_warn = memory_warning()
+    if _mem_warn:
+        print("  WARNUNG: " + _mem_warn[0].format(**_mem_warn[1]))
     if args.build_vault:
         print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
               "Wikilinks + Frontmatter")

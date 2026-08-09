@@ -571,3 +571,26 @@ def test_available_ram_gb_readable():
     gb = dw.available_ram_gb()
     if gb is not None:
         assert 0 < gb < 4096
+
+
+def test_memory_diagnostics_and_warning():
+    """32-Bit-Python und Commit-Knappheit werden erkannt -- die beiden
+    Faelle, in denen bad_alloc trotz reichlich freiem RAM auftritt."""
+    diags = dw.memory_diagnostics()
+    assert diags["python_bits"] in (32, 64)
+    # 32-Bit: immer warnen, unabhaengig vom RAM.
+    warn = dw.memory_warning({"python_bits": 32})
+    assert warn is not None and "32-Bit" in warn[0]
+    # Commit knapp (2 GB) trotz 60 GB freiem RAM: Auslagerungsdatei-Warnung.
+    warn = dw.memory_warning({
+        "python_bits": 64, "ram_avail_gb": 60.0, "commit_avail_gb": 2.0,
+    })
+    assert warn is not None
+    assert "Auslagerungsdatei" in warn[0]
+    assert warn[1] == {"commit": "2.0", "ram": "60.0"}
+    # Gesunde Maschine: keine Warnung.
+    assert dw.memory_warning({
+        "python_bits": 64, "ram_avail_gb": 60.0, "commit_avail_gb": 80.0,
+    }) is None
+    # Unbekannte Werte: keine Falschwarnung.
+    assert dw.memory_warning({"python_bits": 64}) is None

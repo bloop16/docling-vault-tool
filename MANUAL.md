@@ -468,6 +468,25 @@ andere speicherhungrige Programme schließen, und unter Windows die
 Auslagerungsdatei auf „Automatisch verwalten" stellen (Systemsteuerung →
 System → Erweiterte Systemeinstellungen → Leistung → Erweitert).
 
+**Speicherfehler TROTZ reichlich freiem RAM** (z. B. 63 GB frei, aber
+selbst 12-MiB-Allokationen scheitern): Dann limitiert nicht der physische
+Speicher, sondern ein **Pro-Prozess-Limit** — beides im Task-Manager
+unsichtbar. Die zwei Ursachen:
+
+1. **32-Bit-Python**: Jeder Prozess hat nur ~2 GB Adressraum, egal wie
+   viel RAM eingebaut ist. Prüfen: `python -c "import struct;
+   print(struct.calcsize('P')*8)"` → muss `64` ausgeben. Bei `32`:
+   64-Bit-Python installieren (python.org), `.venv`-Ordner löschen,
+   `install_and_run` neu ausführen.
+2. **Commit-Limit**: Die Auslagerungsdatei ist deaktiviert oder fest zu
+   klein — Windows verweigert dann Reservierungen, lange bevor der RAM
+   voll ist. Lösung: Auslagerungsdatei auf „Größe automatisch verwalten".
+
+doc2vault erkennt beide Fälle seit v1.7.6 selbst: Das Dashboard zeigt in
+den Einstellungen eine deutliche Warnung, und am Anfang jedes Laufs steht
+eine Umgebungszeile im Log (`Umgebung: Python 64-Bit | RAM frei … |
+Commit frei … | Adressraum frei …`), an der die Ursache ablesbar ist.
+
 **„cloud-platzhalter" / `unexpected EOF, expected N more bytes`:**
 Die Quelldatei liegt in OneDrive nur als Platzhalter vor („Dateien bei
 Bedarf") und ist lokal unvollständig. doc2vault liest jede Datei vor der
