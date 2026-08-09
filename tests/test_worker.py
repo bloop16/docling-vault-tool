@@ -549,3 +549,25 @@ def test_resume_after_hard_stop(tmp_path, fake_converter):
     (src_root / "a.pdf").write_text("neuer inhalt")
     todo2, _ = dw.filter_already_converted(files, out, src_root, cfg)
     assert sorted(Path(f).name for f in todo2) == ["a.pdf", "c.pdf"]
+
+
+def test_default_max_workers_respects_ram():
+    """Der freie RAM deckelt den Default: jeder Worker braucht ~4 GB."""
+    # Viel RAM: nur die Kern-Regel greift (Kerne-1, max 8).
+    assert dw.default_max_workers(8, available_gb=64.0) == 7
+    assert dw.default_max_workers(16, available_gb=64.0) == 8
+    # Knapper RAM: 6 GB frei -> 1 Worker, 9 GB -> 2 Worker.
+    assert dw.default_max_workers(8, available_gb=6.0) == 1
+    assert dw.default_max_workers(8, available_gb=9.0) == 2
+    # Extrem knapp: nie unter 1.
+    assert dw.default_max_workers(8, available_gb=0.5) == 1
+    # ram_capped_workers direkt.
+    assert dw.ram_capped_workers(None) is None
+    assert dw.ram_capped_workers(12.5) == 3
+
+
+def test_available_ram_gb_readable():
+    """Auf Linux/Windows liefert die Erkennung einen plausiblen Wert."""
+    gb = dw.available_ram_gb()
+    if gb is not None:
+        assert 0 < gb < 4096

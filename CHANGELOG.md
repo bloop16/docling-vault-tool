@@ -4,6 +4,18 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.5] – 2026-08-09
+
+### Added
+- **RAM-basierte Prozessbegrenzung.** Der Standardwert für „Parallele
+  Prozesse" richtet sich jetzt zusätzlich nach dem tatsächlich freien
+  Arbeitsspeicher (~4 GB je Prozess mit OCR) — auf knappen Maschinen
+  startete der rein kernbasierte Default sonst direkt in massenhafte
+  `std::bad_alloc`-Fehler. Die Einstellungen zeigen den freien RAM samt
+  Empfehlung an und warnen, wenn mehr Prozesse gewählt sind, als der
+  Speicher trägt; CLI warnt analog. Nach einem Lauf mit Speicherfehlern
+  landet ein konkreter Hinweis (Anzahl, Prozesszahl, freier RAM) im Log.
+
 ## [1.7.4] – 2026-08-09
 
 ### Added

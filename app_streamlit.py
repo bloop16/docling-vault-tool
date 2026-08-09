@@ -534,11 +534,12 @@ with tab_settings:
     with col_left:
         _overline(_("Verarbeitung"))
         cpu_count = os.cpu_count() or 2
+        _avail_gb = dw.available_ram_gb()
         max_workers = st.slider(
             _("Parallele Prozesse"),
             min_value=1,
             max_value=dw.max_selectable_workers(cpu_count),
-            value=dw.default_max_workers(cpu_count),
+            value=dw.default_max_workers(cpu_count, _avail_gb),
             key="set_workers",
             help=_(
                 "Docling ist CPU- und speicherintensiv -- jeder Prozess laedt "
@@ -547,6 +548,20 @@ with tab_settings:
                 "Standardwert wählen."
             ),
         )
+        _ram_cap = dw.ram_capped_workers(_avail_gb)
+        if _avail_gb is not None:
+            st.caption(_(
+                "Freier Arbeitsspeicher: {gb} GB – empfohlen: höchstens {n} "
+                "parallele Prozesse (je ~4 GB mit OCR).",
+                gb=f"{_avail_gb:.1f}", n=_ram_cap,
+            ))
+        if _ram_cap is not None and max_workers > _ram_cap:
+            st.warning(_(
+                "{n} parallele Prozesse bei {gb} GB freiem Arbeitsspeicher "
+                "führen sehr wahrscheinlich zu Speicherfehlern "
+                "(std::bad_alloc). Empfehlung: auf {rec} reduzieren.",
+                n=max_workers, gb=f"{_avail_gb:.1f}", rec=_ram_cap,
+            ), icon="⚠️")
 
         _overline(_("Docling-Funktionen"))
         extract_images = st.toggle(
