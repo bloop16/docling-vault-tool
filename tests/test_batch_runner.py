@@ -295,6 +295,6 @@ def test_constrained_commit_caps_start_workers(tmp_path, monkeypatch, caplog):
     assert all(r.success for r in results)
     assert any("Commit-Speicher ist das harte Limit" in rec.message
                for rec in caplog.records)
-    # (34,1 - 4) // 8 = 3 Prozesse statt 8.
-    assert any("Start mit 3 statt 8" in rec.message
+    # (34,1 - 4) // 12 = 2 Prozesse statt 8.
+    assert any("Start mit 2 statt 8" in rec.message
                for rec in caplog.records)

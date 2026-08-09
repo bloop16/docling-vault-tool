@@ -222,9 +222,12 @@ def ram_capped_workers(available_gb: float | None) -> int | None:
 # Commit-Fussabdruck eines Workers OHNE Auslagerungsdatei: Torch/ONNX
 # RESERVIEREN deutlich mehr, als sie physisch nutzen -- ohne Pagefile
 # zaehlt jede Reservierung voll (Realfall: 8 Worker frassen 34 GB Commit
-# in 30 s, obwohl der RAM halb leer blieb). Plus Grundreserve fuer
+# in 30 s, obwohl der RAM halb leer blieb). Zweiter Realfall (v1.8.1):
+# selbst 3 Worker haben bei OCR auf einer grossen, seitenreichen PDF
+# denselben Commit binnen 60 s aufgebraucht -- 8 GB/Worker war zu
+# knapp geschaetzt, daher hoeher angesetzt. Plus Grundreserve fuer
 # OS/Dashboard/Spitzen.
-WORKER_COMMIT_GB = 8.0
+WORKER_COMMIT_GB = 12.0
 _COMMIT_BASE_RESERVE_GB = 4.0
 
 
@@ -1712,14 +1715,24 @@ _CRASH_RETRY_LIMIT = 2
 # Adaptive Drosselung bei Speicherdruck (Realfall: Auslagerungsdatei aus,
 # Commit-Limit = physischer RAM): unter dieser Reserve an nutzbarem
 # Speicher bzw. ab so vielen Speicherfehlern in einer Runde wird die
-# Prozesszahl halbiert und die unfertigen Dateien wiederholt.
-_MEM_MIN_FREE_GB = 2.0
+# Prozesszahl halbiert und die unfertigen Dateien wiederholt. Reserve
+# bewusst grosszuegig (4 statt 2 GB): Realfall zeigte, dass der Speicher
+# zwischen zwei 5-Sekunden-Pruefungen von "genug" auf 0,0 GB fallen kann
+# -- mit knapper Reserve schlaegt die Wache dann erst zu, wenn Windows
+# schon abgelehnt hat.
+_MEM_MIN_FREE_GB = 4.0
 _MEM_SHRINK_FAILS = 2
+_MEM_POLL_S = 3.0
 # Schonfrist nach jedem Pool-Start: Das Laden der Modellstapel ist selbst
-# die Commit-Spitze -- die Live-Wache wuerde sonst mitten in der Ladephase
-# kaskadierend drosseln (Realfall: 8 -> 4 -> 2 -> 1 in elf Sekunden).
-# Echte Fehler drosseln weiterhin sofort (_MEM_SHRINK_FAILS).
-_MEM_GRACE_S = 60.0
+# eine Commit-Spitze -- die Live-Wache wuerde sonst mitten in der Ladephase
+# kaskadierend drosseln (Realfall: 8 -> 4 -> 2 -> 1 in elf Sekunden). Kurz
+# gehalten (nur die Ladephase, nicht die Verarbeitung selbst): ein
+# zweiter Realfall zeigte bei 60 s, dass echter, aus der Verarbeitung
+# selbst wachsender Speicherdruck (grosse, seitenreiche OCR-Datei) sonst
+# eine volle Minute lang unbeaufsichtigt laeuft, bis Windows Commit
+# bereits auf 0,0 GB gefallen ist. Echte Speicherfehler drosseln
+# weiterhin sofort, unabhaengig von der Schonfrist (_MEM_SHRINK_FAILS).
+_MEM_GRACE_S = 20.0
 
 
 def _abort_pool(pool) -> None:
@@ -1866,7 +1879,7 @@ def run_conversion_batch(
                         if (
                             workers > 1
                             and time.monotonic() - pool_started >= _MEM_GRACE_S
-                            and time.monotonic() - last_mem_check >= 5.0
+                            and time.monotonic() - last_mem_check >= _MEM_POLL_S
                         ):
                             last_mem_check = time.monotonic()
                             avail = effective_available_gb()

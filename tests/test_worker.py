@@ -617,16 +617,16 @@ def test_effective_available_gb_uses_commit_limit():
 def test_commit_capped_and_recommended_workers():
     """Commit-Deckel greift ohne Auslagerungsdatei UND bei fest zu kleiner
     Auslagerungsdatei (Commit frei < RAM frei); sonst gilt die RAM-Regel."""
-    # Realfall: 34,1 GB Commit, 43,5 GB RAM -> (34,1-4)//8 = 3 Worker.
+    # Realfall: 34,1 GB Commit, 43,5 GB RAM -> (34,1-4)//12 = 2 Worker.
     d = {"python_bits": 64, "ram_avail_gb": 43.5,
          "commit_avail_gb": 34.1, "pagefile_missing": False,
          "commit_hard": True}
-    assert dw.commit_capped_workers(d) == 3
-    assert dw.recommended_workers(16, d) == 3
+    assert dw.commit_capped_workers(d) == 2
+    assert dw.recommended_workers(16, d) == 2
     # Ohne Auslagerungsdatei auch bei kleinem RAM-Vorsprung.
     assert dw.commit_capped_workers({
         "ram_avail_gb": 10.0, "commit_avail_gb": 20.0,
-        "pagefile_missing": True, "commit_hard": True}) == 2
+        "pagefile_missing": True, "commit_hard": True}) == 1
     # Gesundes Windows (Commit frei > RAM frei, Pagefile auto): kein Deckel.
     assert dw.commit_capped_workers({
         "ram_avail_gb": 20.0, "commit_avail_gb": 60.0,
@@ -642,3 +642,16 @@ def test_commit_capped_and_recommended_workers():
     assert dw.commit_capped_workers({
         "ram_avail_gb": 43.5, "commit_avail_gb": 2.0,
         "pagefile_missing": False, "commit_hard": True}) == 1
+
+
+def test_memory_tuning_constants_within_expected_range():
+    """Regressionsschutz fuer die aus Realbetrieb kalibrierten Konstanten
+    (v1.8.1/1.8.2): ein versehentliches Zuruecksetzen soll auffallen."""
+    assert dw.WORKER_COMMIT_GB == 12.0
+    assert dw._COMMIT_BASE_RESERVE_GB == 4.0
+    assert dw._MEM_MIN_FREE_GB == 4.0
+    assert dw._MEM_POLL_S == 3.0
+    # Schonfrist deckt nur die Ladephase, nicht die laufende Verarbeitung
+    # (Realfall: bei 60 s lief eine grosse OCR-Datei eine volle Minute
+    # unbeaufsichtigt, bis der Commit-Speicher schon bei 0,0 GB war).
+    assert dw._MEM_GRACE_S <= 30.0

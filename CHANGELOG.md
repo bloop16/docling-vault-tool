@@ -4,6 +4,25 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.8.2] – 2026-08-09
+
+### Fixed
+- **Speicher-Wache reagiert schneller und rechnet realistischer.**
+  Realbetrieb: Mit 3 Prozessen (Empfehlung aus 1.8.1) lief eine große,
+  seitenreiche OCR-Datei eine volle Minute unbeaufsichtigt, bis die
+  60-Sekunden-Schonfrist endete — zu diesem Zeitpunkt war der
+  Commit-Speicher bereits bei 0,0 GB und es hatte sich eine lange Kette
+  von `std::bad_alloc` aufgebaut. Drei Korrekturen, alle aus den
+  gemessenen Werten dieses Laufs kalibriert:
+  - Schonfrist 60 s → 20 s (deckt nur die Modell-Ladephase, nicht mehr
+    die eigentliche Verarbeitung).
+  - Prüfintervall 5 s → 3 s, Reserve-Schwelle 2 GB → 4 GB — die Wache
+    reagiert, bevor der Speicher komplett aufgebraucht ist, statt erst
+    danach.
+  - Angenommener Commit-Bedarf je Prozess 8 GB → 12 GB (OCR auf großen
+    Dokumenten reserviert mehr, als der bisherige Wert vorsah) — die
+    automatische Empfehlung startet dadurch von vornherein vorsichtiger.
+
 ## [1.8.1] – 2026-08-09
 
 ### Fixed
