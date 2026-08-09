@@ -64,17 +64,79 @@ SUPPORTED_EXTENSIONS = {
 IMAGE_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
 
 
-def default_max_workers(cpu_count: int | None = None) -> int:
+# Realistischer Speicherbedarf eines Workers mit OCR (Docling-Layout-
+# Modelle + OCR-Modelle + Seitenrendering): in Realbetrieben 2-4 GB.
+WORKER_RAM_GB = 4.0
+
+
+def available_ram_gb() -> float | None:
+    """Aktuell freier physischer Arbeitsspeicher in GB (None = unbekannt).
+
+    Bewusst ohne Zusatzabhaengigkeit (psutil): Windows via GlobalMemoryStatusEx,
+    Linux via /proc/meminfo. Andere Plattformen liefern None -- dann greift
+    nur die kernbasierte Obergrenze.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            status = _MemStatus()
+            status.dwLength = ctypes.sizeof(_MemStatus)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(  # type: ignore[attr-defined]
+                ctypes.byref(status)
+            ):
+                return None
+            return status.ullAvailPhys / (1024 ** 3)
+        if sys.platform.startswith("linux"):
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 ** 2)  # kB -> GB
+    except OSError:
+        return None
+    return None
+
+
+def ram_capped_workers(available_gb: float | None) -> int | None:
+    """Wie viele Worker der freie RAM traegt (None = keine Aussage)."""
+    if available_gb is None:
+        return None
+    return max(1, int(available_gb // WORKER_RAM_GB))
+
+
+def default_max_workers(
+    cpu_count: int | None = None, available_gb: float | None = None
+) -> int:
     """Sinnvolle Standard-Prozesszahl fuer die Parallelkonvertierung.
 
-    Ein Kern bleibt fuer OS/Dashboard frei. Als Default bewusst auf 8
-    gedeckelt -- ein sicherer Ausgangswert unabhaengig von Kernzahl und
-    verfuegbarem RAM. Die Obergrenze fuer die Nutzerauswahl (Dashboard-
-    Regler, CLI ``--workers``) ist davon unabhaengig und geht bis
-    Kernzahl-1: wer genug RAM/Kerne hat, kann bewusst hoeher gehen.
+    Ein Kern bleibt fuer OS/Dashboard frei, Default auf 8 gedeckelt.
+    Zusaetzlich zaehlt der freie RAM: jeder Worker laedt einen eigenen
+    Modellstapel (~4 GB mit OCR) -- auf knappen Maschinen wuerde ein rein
+    kernbasierter Default sonst direkt in std::bad_alloc laufen
+    (Realbetrieb: selbst 12-MiB-Allokationen scheiterten). Die Obergrenze
+    fuer die Nutzerauswahl (Regler/CLI) bleibt Kernzahl-1: wer es besser
+    weiss, kann bewusst hoeher gehen.
     """
     n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
-    return max(1, min(8, n - 1))
+    result = max(1, min(8, n - 1))
+    ram_cap = ram_capped_workers(
+        available_gb if available_gb is not None else available_ram_gb()
+    )
+    if ram_cap is not None:
+        result = min(result, ram_cap)
+    return max(1, result)
 
 
 def max_selectable_workers(cpu_count: int | None = None) -> int:
@@ -1686,6 +1748,18 @@ def run_conversion_batch(
     ok_n = sum(1 for r in results if r.success)
     _LOG.info("Batch fertig: %d ok, %d Fehler (von %d)",
               ok_n, len(results) - ok_n, len(results))
+    mem_fail = sum(1 for r in results
+                   if not r.success and r.error_category == "speicher")
+    if mem_fail:
+        avail = available_ram_gb()
+        _LOG.warning(
+            "%d Speicherfehler bei %d parallelen Prozessen%s -- "
+            "parallele Prozesse reduzieren (Einstellungen) oder RAM "
+            "freigeben; jeder Prozess braucht mit OCR ~%d GB.",
+            mem_fail, max_workers,
+            f" (aktuell {avail:.1f} GB RAM frei)" if avail is not None else "",
+            int(WORKER_RAM_GB),
+        )
     return results
 
 
@@ -1939,6 +2013,12 @@ def _run_cli(argv: list[str] | None = None) -> int:
         print(f"  HINWEIS: OCR mit {args.workers} parallelen Prozessen "
               "braucht viel RAM (je Prozess ein eigener Modellstapel). "
               "Bei Speicherfehlern (std::bad_alloc) -w 1 oder -w 2 nutzen.")
+    _avail = available_ram_gb()
+    _cap = ram_capped_workers(_avail)
+    if _cap is not None and args.workers > _cap:
+        print(f"  WARNUNG: nur {_avail:.1f} GB RAM frei -- {args.workers} "
+              f"parallele Prozesse fuehren sehr wahrscheinlich zu "
+              f"Speicherfehlern. Empfehlung: -w {_cap}.")
     if args.build_vault:
         print("  Vault-Build: Notizen → Inbox/, Bilder → Attachments/, "
               "Wikilinks + Frontmatter")

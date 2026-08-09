@@ -458,6 +458,16 @@ Gerettete Dateien erscheinen im Ergebnis als „mit reduzierten Einstellungen
 konvertiert" (CLI: `[reduziert]`). Scheitert auch der Zweitversuch, hilft
 nur mehr RAM oder das Dokument vorab aufzuteilen/zu verkleinern.
 
+Tritt der Fehler **massenhaft über viele Dateien** auf (selbst kleine
+Allokationen scheitern), ist die Maschine insgesamt am Speicherlimit:
+Der Standardwert für **Parallele Prozesse** richtet sich seit v1.7.5
+automatisch nach dem freien RAM (~4 GB je Prozess mit OCR), und die
+Einstellungen zeigen den freien Speicher samt Empfehlung an. Zusätzlich
+prüfen: übrig gebliebene `python.exe`-Prozesse im Task-Manager beenden,
+andere speicherhungrige Programme schließen, und unter Windows die
+Auslagerungsdatei auf „Automatisch verwalten" stellen (Systemsteuerung →
+System → Erweiterte Systemeinstellungen → Leistung → Erweitert).
+
 **„cloud-platzhalter" / `unexpected EOF, expected N more bytes`:**
 Die Quelldatei liegt in OneDrive nur als Platzhalter vor („Dateien bei
 Bedarf") und ist lokal unvollständig. doc2vault liest jede Datei vor der
