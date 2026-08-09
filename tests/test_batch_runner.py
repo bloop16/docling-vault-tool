@@ -234,3 +234,62 @@ def test_watch_parent_exits_when_sentinel_closes():
     send.close()                     # Elternprozess "stirbt"
     assert exited.wait(5), "Waechter hat das Eltern-Ende nicht bemerkt"
     recv.close()
+
+
+def _task_memfail_first_try(source_path: str) -> dw.ConversionResult:
+    """Scheitert beim ersten Versuch mit Speicherfehler, danach ok --
+    simuliert Fehler durch GESAMT-Speicherdruck (nicht durch die Datei)."""
+    marker = Path(source_path + ".tried")
+    if not marker.exists():
+        marker.write_text("1")
+        return dw.ConversionResult(
+            source_path=source_path, success=False,
+            error="std::bad_alloc", error_category="speicher")
+    return _task_ok(source_path)
+
+
+def test_memory_pressure_shrinks_workers_and_retries(tmp_path, monkeypatch, caplog):
+    """Mehrere Speicherfehler in einer Runde -> Prozesszahl halbieren und
+    die Dateien in VOLLER Qualitaet wiederholen (nicht sofort reduziert)."""
+    import logging
+
+    monkeypatch.setattr(dw, "init_worker", _noop_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_memfail_first_try)
+    files = _paths(tmp_path, ["a.pdf", "b.pdf", "c.pdf"])
+
+    with caplog.at_level(logging.WARNING, logger="doc2vault.worker"):
+        results = dw.run_conversion_batch(
+            files, dw.ConverterConfig(), tmp_path / "out", tmp_path,
+            max_workers=2,
+        )
+
+    assert len(results) == 3
+    assert all(r.success for r in results)
+    # Kein Umweg ueber die reduzierten Einstellungen noetig.
+    assert not any(r.reduced_mode for r in results)
+    assert any("Speicherdruck erkannt" in rec.message for rec in caplog.records)
+
+
+def test_missing_pagefile_caps_start_workers(tmp_path, monkeypatch, caplog):
+    """Ohne Auslagerungsdatei ist der freie Commit das harte Budget --
+    der Lauf startet direkt mit entsprechend weniger Prozessen."""
+    import logging
+
+    monkeypatch.setattr(dw, "init_worker", _noop_init)
+    monkeypatch.setattr(dw, "convert_file_task", _task_ok)
+    monkeypatch.setattr(dw, "memory_diagnostics", lambda: {
+        "python_bits": 64, "ram_total_gb": 63.9, "ram_avail_gb": 34.5,
+        "commit_avail_gb": 5.0, "virtual_avail_gb": 131072.0,
+        "pagefile_missing": True,
+    })
+    files = _paths(tmp_path, ["a.pdf", "b.pdf"])
+
+    with caplog.at_level(logging.WARNING, logger="doc2vault.worker"):
+        results = dw.run_conversion_batch(
+            files, dw.ConverterConfig(), tmp_path / "out", tmp_path,
+            max_workers=8,
+        )
+
+    assert all(r.success for r in results)
+    assert any("Keine Auslagerungsdatei" in rec.message
+               for rec in caplog.records)

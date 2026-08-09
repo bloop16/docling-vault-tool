@@ -480,7 +480,16 @@ unsichtbar. Die zwei Ursachen:
    `install_and_run` neu ausführen.
 2. **Commit-Limit**: Die Auslagerungsdatei ist deaktiviert oder fest zu
    klein — Windows verweigert dann Reservierungen, lange bevor der RAM
-   voll ist. Lösung: Auslagerungsdatei auf „Größe automatisch verwalten".
+   voll ist. Einfachste Lösung: Auslagerungsdatei auf „Größe automatisch
+   verwalten". **Wer bewusst ohne Auslagerungsdatei arbeitet**, wird seit
+   v1.8.0 trotzdem unterstützt: doc2vault richtet die Prozesszahl dann am
+   freien Commit-Speicher aus, überwacht ihn während des Laufs und
+   halbiert bei Speicherdruck automatisch die Prozesse — betroffene
+   Dateien werden anschließend in voller Qualität wiederholt, bevor
+   reduzierte Einstellungen zum Einsatz kommen. (Hinweis: Die
+   Auslagerungsdatei ist kein Ersatz für RAM — sie hebt nur das
+   Reservierungs-Limit an; mit 64 GB RAM wird praktisch nie wirklich
+   ausgelagert.)
 
 doc2vault erkennt beide Fälle seit v1.7.6 selbst: Das Dashboard zeigt in
 den Einstellungen eine deutliche Warnung, und am Anfang jedes Laufs steht
