@@ -4,6 +4,14 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.4] – 2026-08-09
+
+### Added
+- **Fehler laufen live im Startterminal durch.** Wer das Dashboard normal
+  im Terminal startet (`doc2vault-ui`), sieht dort jetzt jede
+  fehlgeschlagene Datei (Kategorie + Meldung) und die Zusammenfassung
+  jedes Laufs in Echtzeit — zusätzlich zur Logdatei aus 1.7.3.
+
 ## [1.7.3] – 2026-08-09
 
 ### Added

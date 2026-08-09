@@ -101,12 +101,16 @@ def log_file() -> Path:
     return d / "doc2vault.log"
 
 
-def setup_logging() -> Path:
+def setup_logging(console: bool = False) -> Path:
     """Persistentes Datei-Log (rotierend) fuer alle doc2vault.*-Logger.
 
     Dashboard und CLIs rufen das beim Start auf -- damit sind Fehler auch
     NACH einem Absturz/Stopp nachvollziehbar (Wunsch aus dem Realbetrieb:
     "Ich sehe keinerlei Log"). Idempotent; Ort: <config>/logs/doc2vault.log.
+
+    ``console=True`` spiegelt dieselben Meldungen zusaetzlich ins Terminal
+    (stderr) -- das Dashboard nutzt das, damit Fehler live im Startfenster
+    durchlaufen. Die CLIs lassen es weg, die drucken ihre Fehler selbst.
     """
     import logging.handlers
 
@@ -122,6 +126,15 @@ def setup_logging() -> Path:
         ))
         handler._doc2vault = True
         logger.addHandler(handler)
+    if console and not any(
+        getattr(h, "_doc2vault_console", False) for h in logger.handlers
+    ):
+        stream = logging.StreamHandler()
+        stream.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s: %(message)s", datefmt="%H:%M:%S"
+        ))
+        stream._doc2vault_console = True
+        logger.addHandler(stream)
     return path
 
 
