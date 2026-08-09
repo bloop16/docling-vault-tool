@@ -1346,6 +1346,16 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
+    # Speicher-Hebel: Docling haelt standardmaessig 4 Seiten gleichzeitig
+    # im RAM (Batch). Eine Seite je Batch senkt den Spitzenverbrauch pro
+    # Worker massiv -- der Hauptausloeser der seitenweisen bad_allocs auf
+    # Maschinen mit knappem RAM (kostet nur wenig Durchsatz).
+    try:
+        from docling.datamodel.settings import settings as _dl_settings
+
+        _dl_settings.perf.page_batch_size = 1
+    except Exception:  # noqa: BLE001 -- aeltere Docling-Versionen
+        pass
     _WORKER_CONVERTER = build_converter(config)
     # Alle Fallback-Converter entstehen lazy, nur wenn sie gebraucht werden.
     _WORKER_CONVERTER_REDUCED = None
