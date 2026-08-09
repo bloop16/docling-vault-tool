@@ -270,17 +270,19 @@ def test_memory_pressure_shrinks_workers_and_retries(tmp_path, monkeypatch, capl
     assert any("Speicherdruck erkannt" in rec.message for rec in caplog.records)
 
 
-def test_missing_pagefile_caps_start_workers(tmp_path, monkeypatch, caplog):
-    """Ohne Auslagerungsdatei ist der freie Commit das harte Budget --
-    der Lauf startet direkt mit entsprechend weniger Prozessen."""
+def test_constrained_commit_caps_start_workers(tmp_path, monkeypatch, caplog):
+    """Knapper Commit (Auslagerungsdatei fehlt oder fest zu klein) ist das
+    harte Budget -- der Lauf startet direkt mit weniger Prozessen."""
     import logging
 
     monkeypatch.setattr(dw, "init_worker", _noop_init)
     monkeypatch.setattr(dw, "convert_file_task", _task_ok)
+    # Realfall: 43,5 GB RAM frei, aber nur 34,1 GB Commit -- fest zu
+    # kleine Auslagerungsdatei, pagefile_missing ist dabei False.
     monkeypatch.setattr(dw, "memory_diagnostics", lambda: {
-        "python_bits": 64, "ram_total_gb": 63.9, "ram_avail_gb": 34.5,
-        "commit_avail_gb": 5.0, "virtual_avail_gb": 131072.0,
-        "pagefile_missing": True,
+        "python_bits": 64, "ram_total_gb": 63.9, "ram_avail_gb": 43.5,
+        "commit_avail_gb": 34.1, "virtual_avail_gb": 131072.0,
+        "pagefile_missing": False, "commit_hard": True,
     })
     files = _paths(tmp_path, ["a.pdf", "b.pdf"])
 
@@ -291,5 +293,8 @@ def test_missing_pagefile_caps_start_workers(tmp_path, monkeypatch, caplog):
         )
 
     assert all(r.success for r in results)
-    assert any("Keine Auslagerungsdatei" in rec.message
+    assert any("Commit-Speicher ist das harte Limit" in rec.message
+               for rec in caplog.records)
+    # (34,1 - 4) // 8 = 3 Prozesse statt 8.
+    assert any("Start mit 3 statt 8" in rec.message
                for rec in caplog.records)

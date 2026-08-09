@@ -481,12 +481,16 @@ unsichtbar. Die zwei Ursachen:
 2. **Commit-Limit**: Die Auslagerungsdatei ist deaktiviert oder fest zu
    klein — Windows verweigert dann Reservierungen, lange bevor der RAM
    voll ist. Einfachste Lösung: Auslagerungsdatei auf „Größe automatisch
-   verwalten". **Wer bewusst ohne Auslagerungsdatei arbeitet**, wird seit
-   v1.8.0 trotzdem unterstützt: doc2vault richtet die Prozesszahl dann am
-   freien Commit-Speicher aus, überwacht ihn während des Laufs und
-   halbiert bei Speicherdruck automatisch die Prozesse — betroffene
-   Dateien werden anschließend in voller Qualität wiederholt, bevor
-   reduzierte Einstellungen zum Einsatz kommen. (Hinweis: Die
+   verwalten". **Wer bewusst ohne (oder mit fester kleiner)
+   Auslagerungsdatei arbeitet**, wird seit v1.8.0 trotzdem unterstützt:
+   doc2vault erkennt knappen Commit-Speicher (auch wenn eine kleine
+   Auslagerungsdatei existiert), richtet die Prozesszahl am freien
+   Commit aus (~8 GB *Reservierung* je Prozess — die KI-Bibliotheken
+   reservieren deutlich mehr, als sie physisch nutzen), lässt jedem
+   neuen Prozess-Pool eine Ladephase-Schonfrist und halbiert bei echtem
+   Speicherdruck automatisch die Prozesse — betroffene Dateien werden
+   anschließend in voller Qualität wiederholt, bevor reduzierte
+   Einstellungen zum Einsatz kommen. (Hinweis: Die
    Auslagerungsdatei ist kein Ersatz für RAM — sie hebt nur das
    Reservierungs-Limit an; mit 64 GB RAM wird praktisch nie wirklich
    ausgelagert.)

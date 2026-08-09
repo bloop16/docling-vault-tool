@@ -4,6 +4,27 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.8.1] – 2026-08-09
+
+### Fixed
+- **Drossel-Kaskade behoben (Dateien blieben bei „95 %" hängen).**
+  Realbetrieb nach 1.8.0: 8 Prozesse fraßen 34 GB Commit in 30 s, die
+  Live-Wache halbierte dann im 5-Sekunden-Takt 8→4→2→1 und brach dabei
+  jedes Mal alle angefangenen Dateien ab — nichts wurde je fertig. Drei
+  Korrekturen:
+  - Der Start-Deckel rechnet mit dem realen Commit-Fussabdruck je
+    Prozess (~8 GB Reservierung statt 4 GB physisch) und greift auch
+    bei **fest zu kleiner** Auslagerungsdatei (Commit frei < RAM frei),
+    nicht nur bei fehlender.
+  - Schonfrist nach jedem Pool-Start (60 s): die Ladephase der Modelle
+    ist selbst die Commit-Spitze und löst keine Kaskade mehr aus; echte
+    Speicherfehler drosseln weiterhin sofort.
+  - `WinError 1455` („Auslagerungsdatei zu klein", torch-DLL-Ladefehler)
+    wird als Speicherfehler erkannt; bricht der Pool unter Speicherdruck,
+    wird vor dem Neustart ebenfalls gedrosselt statt mit gleicher
+    Prozesszahl erneut zu scheitern.
+  - Commit-Regeln gelten nur unter Windows (Linux erlaubt Overcommit).
+
 ## [1.8.0] – 2026-08-09
 
 ### Added

@@ -151,6 +151,9 @@ def memory_diagnostics() -> dict:
         "commit_avail_gb": None,
         "virtual_avail_gb": None,
         "pagefile_missing": False,
+        # Nur Windows setzt Commit hart durch; Linux erlaubt Overcommit,
+        # dort darf CommitLimit weder deckeln noch warnen.
+        "commit_hard": False,
     }
     gib = 1024 ** 3
     try:
@@ -161,6 +164,7 @@ def memory_diagnostics() -> dict:
                 diags["ram_avail_gb"] = status.ullAvailPhys / gib
                 # AvailPageFile = verbleibender Commit (RAM + Pagefile).
                 diags["commit_avail_gb"] = status.ullAvailPageFile / gib
+                diags["commit_hard"] = True
                 # AvailVirtual = freier Adressraum DIESES Prozesses
                 # (32-Bit: < 4 GB, egal wie viel RAM da ist).
                 diags["virtual_avail_gb"] = status.ullAvailVirtual / gib
@@ -200,7 +204,8 @@ def memory_warning(diags: dict | None = None) -> tuple[str, dict] | None:
     commit = d.get("commit_avail_gb")
     ram = d.get("ram_avail_gb")
     if (
-        commit is not None and ram is not None
+        d.get("commit_hard")
+        and commit is not None and ram is not None
         and commit < WORKER_RAM_GB and ram >= 2 * WORKER_RAM_GB
     ):
         return (_WARN_COMMIT, {"commit": f"{commit:.1f}", "ram": f"{ram:.1f}"})
@@ -214,6 +219,53 @@ def ram_capped_workers(available_gb: float | None) -> int | None:
     return max(1, int(available_gb // WORKER_RAM_GB))
 
 
+# Commit-Fussabdruck eines Workers OHNE Auslagerungsdatei: Torch/ONNX
+# RESERVIEREN deutlich mehr, als sie physisch nutzen -- ohne Pagefile
+# zaehlt jede Reservierung voll (Realfall: 8 Worker frassen 34 GB Commit
+# in 30 s, obwohl der RAM halb leer blieb). Plus Grundreserve fuer
+# OS/Dashboard/Spitzen.
+WORKER_COMMIT_GB = 8.0
+_COMMIT_BASE_RESERVE_GB = 4.0
+
+
+def commit_capped_workers(diags: dict | None = None) -> int | None:
+    """Worker-Deckel aus dem Commit-Budget, wenn Commit die knappe
+    Ressource ist. Sonst None.
+
+    Greift ohne Auslagerungsdatei (Limit kann nicht wachsen) UND wenn der
+    freie Commit unter dem freien RAM liegt -- das ist das Kennzeichen
+    einer fest zu klein eingestellten Auslagerungsdatei (gesundes Windows
+    mit automatischer Verwaltung hat mehr Commit frei als RAM).
+    """
+    d = diags if diags is not None else memory_diagnostics()
+    commit = d.get("commit_avail_gb")
+    if commit is None or not d.get("commit_hard"):
+        return None
+    ram = d.get("ram_avail_gb")
+    constrained = d.get("pagefile_missing") or (
+        ram is not None and commit < ram
+    )
+    if not constrained:
+        return None
+    return max(1, int((commit - _COMMIT_BASE_RESERVE_GB) // WORKER_COMMIT_GB))
+
+
+def recommended_workers(
+    cpu_count: int | None = None, diags: dict | None = None
+) -> int:
+    """Empfohlene Prozesszahl aus Kernzahl, RAM, Commit und Pagefile-Lage."""
+    d = diags if diags is not None else memory_diagnostics()
+    n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
+    result = max(1, min(8, n - 1))
+    commit_cap = commit_capped_workers(d)
+    if commit_cap is not None:
+        return max(1, min(result, commit_cap))
+    ram_cap = ram_capped_workers(effective_available_gb(d))
+    if ram_cap is not None:
+        result = min(result, ram_cap)
+    return max(1, result)
+
+
 def effective_available_gb(diags: dict | None = None) -> float | None:
     """Tatsaechlich nutzbarer Speicher: min(freier RAM, freier Commit).
 
@@ -222,8 +274,10 @@ def effective_available_gb(diags: dict | None = None) -> float | None:
     KLEINERE der beiden Werte, nicht der physische RAM allein.
     """
     d = diags if diags is not None else memory_diagnostics()
-    values = [v for v in (d.get("ram_avail_gb"), d.get("commit_avail_gb"))
-              if v is not None]
+    values = [v for v in (
+        d.get("ram_avail_gb"),
+        d.get("commit_avail_gb") if d.get("commit_hard") else None,
+    ) if v is not None]
     return min(values) if values else None
 
 
@@ -241,11 +295,11 @@ def default_max_workers(
     fuer die Nutzerauswahl (Regler/CLI) bleibt Kernzahl-1: wer es besser
     weiss, kann bewusst hoeher gehen.
     """
+    if available_gb is None:
+        return recommended_workers(cpu_count)
     n = cpu_count if cpu_count is not None else (os.cpu_count() or 2)
     result = max(1, min(8, n - 1))
-    ram_cap = ram_capped_workers(
-        available_gb if available_gb is not None else effective_available_gb()
-    )
+    ram_cap = ram_capped_workers(available_gb)
     if ram_cap is not None:
         result = min(result, ram_cap)
     return max(1, result)
@@ -1065,7 +1119,8 @@ _ERROR_RULES: list[tuple[tuple[str, ...], str, str]] = [
     (
         ("memoryerror", "cannot allocate", "out of memory", "oom", "killed",
          "bad_alloc", "not enough memory", "unable to allocate",
-         "defaultcpuallocator", "teilkonvertierung"),
+         "defaultcpuallocator", "teilkonvertierung",
+         "auslagerungsdatei", "winerror 1455", "paging file is too small"),
         "speicher",
         "Zu wenig Arbeitsspeicher – Anzahl paralleler Prozesse reduzieren.",
     ),
@@ -1660,6 +1715,11 @@ _CRASH_RETRY_LIMIT = 2
 # Prozesszahl halbiert und die unfertigen Dateien wiederholt.
 _MEM_MIN_FREE_GB = 2.0
 _MEM_SHRINK_FAILS = 2
+# Schonfrist nach jedem Pool-Start: Das Laden der Modellstapel ist selbst
+# die Commit-Spitze -- die Live-Wache wuerde sonst mitten in der Ladephase
+# kaskadierend drosseln (Realfall: 8 -> 4 -> 2 -> 1 in elf Sekunden).
+# Echte Fehler drosseln weiterhin sofort (_MEM_SHRINK_FAILS).
+_MEM_GRACE_S = 60.0
 
 
 def _abort_pool(pool) -> None:
@@ -1726,15 +1786,15 @@ def run_conversion_batch(
     # ist der beim Start freie Commit das harte Budget fuer den ganzen
     # Lauf und die Prozesszahl wird direkt daran ausgerichtet.
     workers = max(1, max_workers)
-    if diags.get("pagefile_missing"):
-        start_cap = ram_capped_workers(effective_available_gb(diags))
-        if start_cap is not None and start_cap < workers:
-            _LOG.warning(
-                "Keine Auslagerungsdatei: Commit-Speicher ist das harte "
-                "Limit -- Start mit %d statt %d parallelen Prozessen.",
-                start_cap, workers,
-            )
-            workers = start_cap
+    start_cap = commit_capped_workers(diags)
+    if start_cap is not None and start_cap < workers:
+        _LOG.warning(
+            "Commit-Speicher ist das harte Limit (Auslagerungsdatei fehlt "
+            "oder fest zu klein) -- Start mit %d statt %d parallelen "
+            "Prozessen (~%d GB Reservierung je Prozess).",
+            start_cap, workers, int(WORKER_COMMIT_GB),
+        )
+        workers = start_cap
 
     remaining = [str(f) for f in files]
     total = len(remaining)
@@ -1761,7 +1821,8 @@ def run_conversion_batch(
         unfinished: list[str] = []
         mem_fail_round = 0
         shrink = False
-        last_mem_check = time.monotonic()
+        pool_started = time.monotonic()
+        last_mem_check = pool_started
 
         def _collect_failure(res: ConversionResult) -> None:
             # Speicher-/Absturzfaelle: bei paralleler Arbeit ist der Fehler
@@ -1801,8 +1862,10 @@ def run_conversion_batch(
                             heartbeat()
                         # Live-Wache: wird der nutzbare Speicher knapp,
                         # drosseln BEVOR Windows Allokationen verweigert.
+                        # Waehrend der Ladephase (Schonfrist) ausgesetzt.
                         if (
                             workers > 1
+                            and time.monotonic() - pool_started >= _MEM_GRACE_S
                             and time.monotonic() - last_mem_check >= 5.0
                         ):
                             last_mem_check = time.monotonic()
@@ -1869,6 +1932,14 @@ def run_conversion_batch(
                 )))
             else:
                 next_round.append(src)
+        # Pool-Bruch (z. B. torch-Ladefehler WinError 1455) unter
+        # Speicherdruck: mit gleicher Prozesszahl neu zu starten wuerde
+        # nur wieder brechen -- ebenfalls drosseln.
+        if not shrink and crashed and workers > 1:
+            avail = effective_available_gb()
+            if avail is not None and avail < _MEM_MIN_FREE_GB:
+                shrink = True
+
         remaining = mem_retry + unfinished + next_round
         if shrink:
             old_workers = workers
@@ -2208,9 +2279,10 @@ def _run_cli(argv: list[str] | None = None) -> int:
         print(f"  HINWEIS: OCR mit {args.workers} parallelen Prozessen "
               "braucht viel RAM (je Prozess ein eigener Modellstapel). "
               "Bei Speicherfehlern (std::bad_alloc) -w 1 oder -w 2 nutzen.")
-    _avail = effective_available_gb()
-    _cap = ram_capped_workers(_avail)
-    if _cap is not None and args.workers > _cap:
+    _mem_diags = memory_diagnostics()
+    _avail = effective_available_gb(_mem_diags)
+    _cap = recommended_workers(diags=_mem_diags)
+    if _avail is not None and args.workers > _cap:
         print(f"  WARNUNG: nur {_avail:.1f} GB nutzbarer Speicher frei "
               f"(min aus RAM und Commit) -- {args.workers} parallele "
               f"Prozesse fuehren sehr wahrscheinlich zu Speicherfehlern. "
