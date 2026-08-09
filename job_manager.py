@@ -95,6 +95,36 @@ def config_dir() -> Path:
     return base
 
 
+def log_file() -> Path:
+    d = config_dir() / "logs"
+    d.mkdir(exist_ok=True)
+    return d / "doc2vault.log"
+
+
+def setup_logging() -> Path:
+    """Persistentes Datei-Log (rotierend) fuer alle doc2vault.*-Logger.
+
+    Dashboard und CLIs rufen das beim Start auf -- damit sind Fehler auch
+    NACH einem Absturz/Stopp nachvollziehbar (Wunsch aus dem Realbetrieb:
+    "Ich sehe keinerlei Log"). Idempotent; Ort: <config>/logs/doc2vault.log.
+    """
+    import logging.handlers
+
+    logger = logging.getLogger("doc2vault")
+    logger.setLevel(logging.INFO)
+    path = log_file()
+    if not any(getattr(h, "_doc2vault", False) for h in logger.handlers):
+        handler = logging.handlers.RotatingFileHandler(
+            path, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s"
+        ))
+        handler._doc2vault = True
+        logger.addHandler(handler)
+    return path
+
+
 def _jobs_file() -> Path:
     return config_dir() / "jobs.json"
 
