@@ -247,6 +247,32 @@ def _watch_parent(sentinel, _exit=os._exit) -> None:
     _exit(1)
 
 
+def _disable_windows_error_dialog() -> None:
+    """Windows-Absturzdialog ("python.exe - Fehler in Anwendung") fuer
+    Worker abschalten: Bei nativen OOM-Abstuerzen (Access Violation in
+    torch/pdfium) blockiert der Dialog sonst den toten Prozess, bis jemand
+    klickt -- erst danach greifen Pool-Neustart und reduzierter
+    Zweitversuch. Ohne Dialog stirbt der Worker still und die
+    Absturzbehandlung laeuft unbeaufsichtigt durch."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        SEM_FAILCRITICALERRORS = 0x0001
+        SEM_NOGPFAULTERRORBOX = 0x0002
+        SEM_NOOPENFILEERRORBOX = 0x8000
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetErrorMode(
+            kernel32.GetErrorMode()
+            | SEM_FAILCRITICALERRORS
+            | SEM_NOGPFAULTERRORBOX
+            | SEM_NOOPENFILEERRORBOX
+        )
+    except Exception:  # noqa: BLE001 -- best effort
+        pass
+
+
 def _exit_when_parent_dies() -> None:
     """Startet den Eltern-Waechter als Daemon-Thread (best effort)."""
     try:
@@ -1343,6 +1369,7 @@ def init_worker(config: ConverterConfig, output_dir: str, input_root: str) -> No
     _mute_torch_pin_memory_warning()
     _mute_worker_progress_bars()
     _exit_when_parent_dies()
+    _disable_windows_error_dialog()
     _WORKER_CONFIG = config
     _WORKER_OUTPUT = Path(output_dir)
     _WORKER_ROOT = Path(input_root)
