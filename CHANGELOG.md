@@ -4,6 +4,17 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.7.7] – 2026-08-09
+
+### Fixed
+- **Prozessbegrenzung rechnet jetzt mit dem Commit-Speicher.** Die
+  Diagnose aus 1.7.6 bestätigte im Realbetrieb den Verdacht: 34,5 GB
+  RAM frei, aber nur 0,6 GB Commit (Auslagerungsdatei deaktiviert) —
+  maßgeblich für `std::bad_alloc` ist der kleinere der beiden Werte.
+  Der Standardwert für „Parallele Prozesse", die Empfehlung in den
+  Einstellungen und die CLI-Warnung nutzen jetzt min(freier RAM,
+  freier Commit) statt nur den physischen RAM.
+
 ## [1.7.6] – 2026-08-09
 
 ### Added
