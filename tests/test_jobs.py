@@ -415,3 +415,26 @@ def test_job_resolved_source_fallback(jobs_home, tmp_path):
     (root / "Vault").rename(moved / "Vault")
     job.target = str(moved / "Vault")             # Ziel des neuen Systems
     assert Path(job.resolved_source()) == (moved / "Quelle").resolve()
+
+
+def test_setup_logging_console_idempotent(jobs_home):
+    """Datei-Handler immer, Konsolen-Handler nur mit console=True --
+    Mehrfachaufrufe duerfen keine Handler stapeln."""
+    import logging
+
+    logger = logging.getLogger("doc2vault")
+    before = list(logger.handlers)
+    try:
+        logger.handlers = []
+        path = jm.setup_logging()
+        jm.setup_logging()
+        assert path.parent.is_dir()
+        assert len(logger.handlers) == 1          # nur Datei
+        jm.setup_logging(console=True)
+        jm.setup_logging(console=True)
+        assert len(logger.handlers) == 2          # Datei + Konsole
+        streams = [h for h in logger.handlers
+                   if getattr(h, "_doc2vault_console", False)]
+        assert len(streams) == 1
+    finally:
+        logger.handlers = before

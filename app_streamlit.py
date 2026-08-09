@@ -43,7 +43,8 @@ import vault_index as vi
 from i18n import LANGUAGES
 from i18n import tr as _
 
-_LOG_PATH = jm.setup_logging()
+# console=True: Fehler laufen zusaetzlich live im Startterminal durch.
+_LOG_PATH = jm.setup_logging(console=True)
 
 st.set_page_config(
     page_title="doc2vault",
