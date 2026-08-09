@@ -286,8 +286,9 @@ def test_error_classification_second_real_run():
     assert cat == "pdf-parser"
 
 
-def test_pdfium_fallback_rescues_refused_pdf(tmp_path, monkeypatch, fake_converter):
-    """docling-parse lehnt ab -> automatischer zweiter Versuch mit pypdfium."""
+def test_docling_parse_fallback_rescues_refused_pdf(tmp_path, monkeypatch, fake_converter):
+    """pypdfium (Standard-Parser seit v1.9.0) lehnt ab -> automatischer
+    zweiter Versuch mit dem klassischen docling-parse-Parser."""
     src_root = tmp_path / "in"
     src_root.mkdir()
     out = tmp_path / "vault"
@@ -299,22 +300,24 @@ def test_pdfium_fallback_rescues_refused_pdf(tmp_path, monkeypatch, fake_convert
             raise RuntimeError(f"Conversion failed for: {source}")
 
     def _fake_build(config=None, pdf_backend=None):
-        return fake_converter if pdf_backend == "pypdfium" else _RefusingConverter()
+        # Primaerer Aufruf (init_worker) uebergibt pdf_backend="pypdfium"
+        # und lehnt hier ab; der Rettungsversuch ruft ohne Override auf.
+        return _RefusingConverter() if pdf_backend == "pypdfium" else fake_converter
 
     monkeypatch.setattr(dw, "build_converter", _fake_build)
     dw.init_worker(dw.ConverterConfig(), str(out), str(src_root))
 
     res = dw.convert_file_task(str(src))
     assert res.success
-    assert res.pdf_backend == "pypdfium"
+    assert res.pdf_backend == "docling-parse"
 
-    # Nicht-Parser-Fehler loesen KEINEN pypdfium-Versuch aus.
+    # Nicht-Parser-Fehler loesen KEINEN Rettungsversuch aus.
     class _OtherErrorConverter:
         def convert(self, source):
             raise RuntimeError("kaputt")
 
     def _fake_build_other(config=None, pdf_backend=None):
-        assert pdf_backend is None, "unerwarteter pypdfium-Fallback"
+        assert pdf_backend == "pypdfium", "unerwarteter Fallback-Aufruf"
         return _OtherErrorConverter()
 
     monkeypatch.setattr(dw, "build_converter", _fake_build_other)
@@ -655,3 +658,29 @@ def test_memory_tuning_constants_within_expected_range():
     # (Realfall: bei 60 s lief eine grosse OCR-Datei eine volle Minute
     # unbeaufsichtigt, bis der Commit-Speicher schon bei 0,0 GB war).
     assert dw._MEM_GRACE_S <= 30.0
+
+
+def test_init_worker_uses_pypdfium_as_primary_parser(tmp_path, monkeypatch):
+    """Regressionsschutz (v1.9.0): pypdfium muss der PRIMAERE Parser sein,
+    nicht nur ein Fallback -- Doclings eigener Standardparser DLPARSE_V4
+    haeuft bei langen Dokumenten unbegrenzt Speicher an (verifiziert via
+    docling-project/docling#2077/#3671: 4500 Seiten -> 20+ GB, versus
+    konstant ~4 GB mit pypdfium). Ein Zuruecksetzen auf pdf_backend=None
+    fuer den primaeren Converter waere ein stiller Rueckfall in den
+    urspruenglichen bad_alloc-Ausloeser."""
+    calls = []
+
+    def _fake_build(config=None, pdf_backend=None):
+        calls.append(pdf_backend)
+        return object()
+
+    monkeypatch.setattr(dw, "build_converter", _fake_build)
+    dw.init_worker(dw.ConverterConfig(), str(tmp_path / "out"), str(tmp_path))
+    assert calls == ["pypdfium"]
+
+
+def test_build_converter_caps_thread_count():
+    """Jeder Worker-PROZESS begrenzt seine internen Threads, damit sich
+    max_workers * Threads nicht zu einer Speicherexplosion multipliziert
+    (docling-project/docling#3099: 'mehr Threads = mehr Speicher')."""
+    assert dw.WORKER_NUM_THREADS <= 2
