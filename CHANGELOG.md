@@ -4,6 +4,22 @@ Alle nennenswerten Änderungen an doc2vault. Format nach
 [Keep a Changelog](https://keepachangelog.com/de/), Versionierung nach
 [SemVer](https://semver.org/lang/de/).
 
+## [1.8.0] – 2026-08-09
+
+### Added
+- **Betrieb ohne Auslagerungsdatei: adaptive Speicher-Drosselung.**
+  Für Maschinen, deren Windows-Auslagerungsdatei bewusst deaktiviert ist
+  (Commit-Limit = physischer RAM, kann nicht wachsen):
+  - Beim Start wird die Prozesszahl am tatsächlich freien
+    Commit-Speicher ausgerichtet statt an der Kernzahl.
+  - Während des Laufs überwacht der Batch-Runner den nutzbaren Speicher
+    (~alle 5 s) und halbiert die Prozesszahl **präventiv**, bevor
+    Windows Allokationen verweigert.
+  - Speicherfehler bei paralleler Arbeit gelten zuerst als Folge des
+    Gesamt-Speicherdrucks: Die Dateien werden mit weniger Prozessen in
+    **voller Qualität** wiederholt; die reduzierten Einstellungen
+    bleiben der letzte Ausweg.
+
 ## [1.7.7] – 2026-08-09
 
 ### Fixed

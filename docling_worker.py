@@ -150,6 +150,7 @@ def memory_diagnostics() -> dict:
         "ram_avail_gb": None,
         "commit_avail_gb": None,
         "virtual_avail_gb": None,
+        "pagefile_missing": False,
     }
     gib = 1024 ** 3
     try:
@@ -163,6 +164,11 @@ def memory_diagnostics() -> dict:
                 # AvailVirtual = freier Adressraum DIESES Prozesses
                 # (32-Bit: < 4 GB, egal wie viel RAM da ist).
                 diags["virtual_avail_gb"] = status.ullAvailVirtual / gib
+                # Commit-Limit == physischer RAM -> keine Auslagerungsdatei:
+                # das Limit kann nicht wachsen, Drosselung muss frueh greifen.
+                diags["pagefile_missing"] = (
+                    status.ullTotalPageFile - status.ullTotalPhys
+                ) < gib
         elif sys.platform.startswith("linux"):
             info: dict[str, int] = {}
             for line in Path("/proc/meminfo").read_text().splitlines():
@@ -1648,6 +1654,13 @@ def convert_file_task(source_path: str) -> ConversionResult:
 # erneut versucht wird, bevor sie endgueltig als fehlgeschlagen gilt.
 _CRASH_RETRY_LIMIT = 2
 
+# Adaptive Drosselung bei Speicherdruck (Realfall: Auslagerungsdatei aus,
+# Commit-Limit = physischer RAM): unter dieser Reserve an nutzbarem
+# Speicher bzw. ab so vielen Speicherfehlern in einer Runde wird die
+# Prozesszahl halbiert und die unfertigen Dateien wiederholt.
+_MEM_MIN_FREE_GB = 2.0
+_MEM_SHRINK_FAILS = 2
+
 
 def _abort_pool(pool) -> None:
     """Sofort-Stopp eines Pools: laufende Worker beenden statt auf sie zu
@@ -1709,6 +1722,20 @@ def run_conversion_batch(
     if mem_warn:
         _LOG.warning(mem_warn[0].format(**mem_warn[1]))
 
+    # Ohne Auslagerungsdatei kann das Commit-Limit nicht wachsen -- dann
+    # ist der beim Start freie Commit das harte Budget fuer den ganzen
+    # Lauf und die Prozesszahl wird direkt daran ausgerichtet.
+    workers = max(1, max_workers)
+    if diags.get("pagefile_missing"):
+        start_cap = ram_capped_workers(effective_available_gb(diags))
+        if start_cap is not None and start_cap < workers:
+            _LOG.warning(
+                "Keine Auslagerungsdatei: Commit-Speicher ist das harte "
+                "Limit -- Start mit %d statt %d parallelen Prozessen.",
+                start_cap, workers,
+            )
+            workers = start_cap
+
     remaining = [str(f) for f in files]
     total = len(remaining)
     crash_seen: dict[str, int] = {}
@@ -1728,16 +1755,36 @@ def run_conversion_batch(
         if progress:
             progress(done, total, res)
 
-    def _collect_failure(res: ConversionResult) -> None:
-        if res.error_category in ("speicher", "prozessabsturz"):
-            retry_reduced.append((res.source_path, res))
-        else:
-            _emit(res)
-
     while remaining:
         crashed: list[str] = []
+        mem_retry: list[str] = []
+        unfinished: list[str] = []
+        mem_fail_round = 0
+        shrink = False
+        last_mem_check = time.monotonic()
+
+        def _collect_failure(res: ConversionResult) -> None:
+            # Speicher-/Absturzfaelle: bei paralleler Arbeit ist der Fehler
+            # oft reine Folge des GESAMT-Speicherdrucks (Realfall: 63 GB
+            # RAM, Auslagerungsdatei aus, 8 Prozesse) -- erst mit weniger
+            # Prozessen in voller Qualitaet wiederholen; die reduzierten
+            # Einstellungen bleiben der letzte Ausweg.
+            nonlocal mem_fail_round
+            if res.error_category not in ("speicher", "prozessabsturz"):
+                _emit(res)
+                return
+            if workers <= 1:  # noqa: B023 -- Aufruf nur innerhalb derselben Runde
+                retry_reduced.append((res.source_path, res))
+                return
+            mem_fail_round += 1
+            crash_seen[res.source_path] = crash_seen.get(res.source_path, 0) + 1
+            if crash_seen[res.source_path] >= _CRASH_RETRY_LIMIT:
+                retry_reduced.append((res.source_path, res))
+            else:
+                mem_retry.append(res.source_path)  # noqa: B023 -- Aufruf nur in derselben Runde
+
         pool = ProcessPoolExecutor(
-            max_workers=max_workers,
+            max_workers=workers,
             initializer=init_worker,
             initargs=(config, str(output_dir), str(input_root)),
         )
@@ -1745,13 +1792,26 @@ def run_conversion_batch(
             try:
                 futures = {pool.submit(convert_file_task, f): f for f in remaining}
                 pending = set(futures)
-                while pending:
+                while pending and not shrink:
                     done_now, pending = wait(
                         pending, timeout=1.0, return_when=FIRST_COMPLETED
                     )
                     if not done_now:
                         if heartbeat:
                             heartbeat()
+                        # Live-Wache: wird der nutzbare Speicher knapp,
+                        # drosseln BEVOR Windows Allokationen verweigert.
+                        if (
+                            workers > 1
+                            and time.monotonic() - last_mem_check >= 5.0
+                        ):
+                            last_mem_check = time.monotonic()
+                            avail = effective_available_gb()
+                            if avail is not None and avail < _MEM_MIN_FREE_GB:
+                                _LOG.warning(
+                                    "Nur noch %.1f GB nutzbarer Speicher "
+                                    "frei -- drossele praeventiv.", avail)
+                                shrink = True
                         continue
                     for future in done_now:
                         src = futures[future]
@@ -1774,13 +1834,20 @@ def run_conversion_batch(
                             _emit(res)
                         else:
                             _collect_failure(res)
-                pool.shutdown(wait=True)
+                    if mem_fail_round >= _MEM_SHRINK_FAILS and workers > 1:
+                        shrink = True
+                if shrink:
+                    unfinished = [futures[f] for f in pending]
+                    _abort_pool(pool)
+                else:
+                    pool.shutdown(wait=True)
             except BrokenProcessPool:
                 # Bruch beim Einreihen/Shutdown: alle noch nicht gemeldeten
                 # Dateien gelten als potenziell betroffen.
                 pool.shutdown(wait=False, cancel_futures=True)
                 handled = {r.source_path for r in results}
                 handled |= {src for src, _ in retry_reduced}
+                handled |= set(mem_retry) | set(unfinished)
                 crashed += [f for f in remaining
                             if f not in crashed and f not in handled]
         except BaseException:
@@ -1802,7 +1869,15 @@ def run_conversion_batch(
                 )))
             else:
                 next_round.append(src)
-        remaining = next_round
+        remaining = mem_retry + unfinished + next_round
+        if shrink:
+            old_workers = workers
+            workers = max(1, workers // 2)
+            _LOG.warning(
+                "Speicherdruck erkannt: parallele Prozesse %d -> %d, "
+                "%d Datei(en) werden wiederholt.",
+                old_workers, workers, len(remaining),
+            )
 
     # Zweiter Versuch mit reduzierten Einstellungen (Bildskalierung 1.0,
     # ohne Bildextraktion), sequenziell und isoliert -- maximaler Speicher
